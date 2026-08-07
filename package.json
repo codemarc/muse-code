@@ -1,0 +1,198 @@
+{
+  "name": "muse-cli-chat",
+  "displayName": "Muse CLI Chat",
+  "description": "Unofficial VS Code / Cursor sidebar for Meta Muse Code. Wraps the muse CLI (muse exec --json); not affiliated with Meta.",
+  "version": "0.1.0",
+  "publisher": "codemarc",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#1e1e1e",
+    "theme": "dark"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bltcore-com/tools.git",
+    "directory": "extensions/muse-code"
+  },
+  "bugs": {
+    "url": "https://github.com/bltcore-com/tools/issues"
+  },
+  "homepage": "https://github.com/bltcore-com/tools/tree/main/extensions/muse-code",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Other"
+  ],
+  "keywords": [
+    "muse",
+    "muse-code",
+    "meta",
+    "ai",
+    "coding-agent",
+    "cli"
+  ],
+  "activationEvents": [
+    "onView:muse.chatView",
+    "onCommand:muse.openChat",
+    "onCommand:muse.sendSelection",
+    "onCommand:muse.newSession",
+    "onCommand:muse.stop",
+    "onCommand:muse.openInteractiveTerminal",
+    "onCommand:muse.checkInstallation"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "muse",
+          "title": "Muse CLI Chat",
+          "icon": "media/muse.svg"
+        }
+      ]
+    },
+    "views": {
+      "muse": [
+        {
+          "type": "webview",
+          "id": "muse.chatView",
+          "name": "Muse"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "muse.openChat",
+        "title": "Muse CLI Chat: Open Chat",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "muse.sendSelection",
+        "title": "Muse CLI Chat: Send Selection"
+      },
+      {
+        "command": "muse.newSession",
+        "title": "Muse CLI Chat: New Session",
+        "icon": "$(add)"
+      },
+      {
+        "command": "muse.stop",
+        "title": "Muse CLI Chat: Stop",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "muse.openInteractiveTerminal",
+        "title": "Muse CLI Chat: Open Interactive Terminal",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "muse.checkInstallation",
+        "title": "Muse CLI Chat: Check Installation"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "muse.newSession",
+          "when": "view == muse.chatView",
+          "group": "navigation"
+        },
+        {
+          "command": "muse.stop",
+          "when": "view == muse.chatView",
+          "group": "navigation"
+        },
+        {
+          "command": "muse.openInteractiveTerminal",
+          "when": "view == muse.chatView",
+          "group": "navigation"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "muse.sendSelection",
+          "when": "editorHasSelection",
+          "group": "muse@1"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Muse CLI Chat",
+      "properties": {
+        "muse.executablePath": {
+          "type": "string",
+          "default": "muse",
+          "description": "Path to the Muse Code binary (muse). Default resolves via PATH; ~/.local/bin/muse is also tried."
+        },
+        "muse.model": {
+          "type": "string",
+          "default": "",
+          "description": "Optional model id passed to muse exec --model. Empty uses Muse defaults."
+        },
+        "muse.reasoningEffort": {
+          "type": "string",
+          "enum": [
+            "",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "ultra"
+          ],
+          "default": "",
+          "description": "Optional --reasoning-effort for muse exec. Empty uses Muse default (high)."
+        },
+        "muse.trustWorkspace": {
+          "type": "boolean",
+          "default": true,
+          "description": "Pass --trust-workspace so project skills, rules, and AGENTS.md load."
+        },
+        "muse.disableApproval": {
+          "type": "boolean",
+          "default": true,
+          "description": "Pass --disable-approval (required for headless runs; sandbox stays on unless yolo is enabled). Use Open Interactive Terminal for staged approvals."
+        },
+        "muse.yolo": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "**Dangerous.** Pass `--yolo` (disables approval and sandbox, trusts workspace). Prefer `disableApproval` with the OS sandbox. Confirm you trust the workspace before enabling."
+        },
+        "muse.useEchoProvider": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use --provider echo for offline UI testing (no Meta API)."
+        },
+        "muse.extraArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra argv appended to muse exec (escape hatch)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "bun run esbuild.mjs",
+    "compile:prod": "NODE_ENV=production bun run esbuild.mjs",
+    "watch": "bun run esbuild.mjs --watch",
+    "check": "tsc -p . --noEmit",
+    "test": "bun test src/",
+    "package": "bun run check && bun run test && bun run compile:prod && bunx vsce package --no-dependencies",
+    "publish:ovsx": "bun run package && bunx ovsx publish *.vsix",
+    "publish:vscode": "bun run package && bunx vsce publish --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.3.2",
+    "esbuild": "^0.25.1",
+    "typescript": "^5.8.2"
+  }
+}
