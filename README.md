@@ -25,7 +25,8 @@ After this extension is on a marketplace:
 Or install a local `.vsix`:
 
 ```bash
-cd tools/extensions/muse-code
+git clone https://github.com/codemarc/muse-code.git
+cd muse-code
 bun install
 bun run package
 code --install-extension muse-cli-chat-0.1.0.vsix
@@ -35,7 +36,8 @@ code --install-extension muse-cli-chat-0.1.0.vsix
 ## Develop
 
 ```bash
-cd tools/extensions/muse-code
+git clone https://github.com/codemarc/muse-code.git
+cd muse-code
 bun install
 bun run compile
 ```

@@ -12,13 +12,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/bltcore-com/tools.git",
-    "directory": "extensions/muse-code"
+    "url": "https://github.com/codemarc/muse-code.git"
   },
   "bugs": {
-    "url": "https://github.com/bltcore-com/tools/issues"
+    "url": "https://github.com/codemarc/muse-code/issues"
   },
-  "homepage": "https://github.com/bltcore-com/tools/tree/main/extensions/muse-code",
+  "homepage": "https://github.com/codemarc/muse-code",
   "engines": {
     "vscode": "^1.85.0"
   },
