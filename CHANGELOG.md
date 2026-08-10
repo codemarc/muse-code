@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.8] - 2026-08-10
+
+### Added
+
+- Session history: resume retained Muse sessions for the current folder (Quick Pick + History button)
+- Hydrate the sidebar from Muse’s session log / `muse export` (source of truth), with a local transcript cache for snappy open
+- Command: **Muse CLI Chat: Resume Session**
+
 ## [0.1.7] - 2026-08-10
 
 ### Fixed

@@ -4,7 +4,9 @@
   const input = document.getElementById("input");
   const sendBtn = document.getElementById("send");
   const stopBtn = document.getElementById("stop");
+  const historyBtn = document.getElementById("history");
   const sessionEl = document.getElementById("session");
+  const sessionBtn = document.getElementById("session-btn");
   const folderEl = document.getElementById("folder");
   const setupEl = document.getElementById("setup");
   const setupMsg = document.getElementById("setup-msg");
@@ -39,11 +41,50 @@
     return el;
   }
 
+  function clearTranscript() {
+    transcript.innerHTML = "";
+    assistantEl = null;
+  }
+
+  function renderHistory(items) {
+    clearTranscript();
+    if (!items || !items.length) {
+      return;
+    }
+    for (const item of items) {
+      switch (item.type) {
+        case "user":
+          addMsg("user", item.text || "");
+          break;
+        case "assistant":
+          addMsg("assistant", item.text || "", "Muse");
+          break;
+        case "tool":
+          addMsg("tool", item.text || "", "tool: " + (item.name || "tool"));
+          break;
+        case "task":
+          addMsg("task", item.text || "", "task");
+          break;
+        case "status":
+          addMsg("status", item.text || "", "status");
+          break;
+        case "error":
+          addMsg("error", item.text || "", "error");
+          break;
+        default:
+          break;
+      }
+    }
+    assistantEl = null;
+  }
+
   function setRunning(value) {
     running = value;
     sendBtn.disabled = value || !museReady;
     stopBtn.disabled = !value;
     input.disabled = value || !museReady;
+    historyBtn.disabled = value;
+    sessionBtn.disabled = value;
   }
 
   function setSetup(msg) {
@@ -79,10 +120,19 @@
     input.value = "";
   }
 
+  function pickSession() {
+    if (running) {
+      return;
+    }
+    vscode.postMessage({ type: "pickSession" });
+  }
+
   sendBtn.addEventListener("click", submit);
   stopBtn.addEventListener("click", function () {
     vscode.postMessage({ type: "stop" });
   });
+  historyBtn.addEventListener("click", pickSession);
+  sessionBtn.addEventListener("click", pickSession);
   recheckBtn.addEventListener("click", function () {
     vscode.postMessage({ type: "recheck" });
   });
@@ -125,9 +175,11 @@
       case "setup":
         setSetup(msg);
         break;
+      case "history":
+        renderHistory(msg.items || []);
+        break;
       case "cleared":
-        transcript.innerHTML = "";
-        assistantEl = null;
+        clearTranscript();
         break;
       case "user":
         assistantEl = null;
@@ -168,7 +220,7 @@
         addMsg("task", msg.text || "", "task");
         break;
       case "stderr":
-        addMsg("stderr", msg.text || "", "muse");
+        addMsg("stderr", truncate(msg.text || "", 4000), "muse");
         break;
       case "error":
         addMsg("error", msg.text || "", "error");

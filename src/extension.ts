@@ -29,6 +29,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("muse.selectWorkspaceFolder", () =>
       provider.selectWorkspaceFolder(),
     ),
+    vscode.commands.registerCommand("muse.pickSession", () =>
+      provider.pickSession(),
+    ),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("muse")) {
         void provider.refreshSetup();

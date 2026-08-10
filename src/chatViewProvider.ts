@@ -7,10 +7,16 @@ import {
   startMuseExec,
   type MuseRunHandle,
 } from "./museCli";
+import { loadSessionTranscript } from "./museExport";
 import type { MuseUiEvent } from "./museJsonl";
+import {
+  formatSessionPickLabel,
+  listMuseSessionsForWorkspace,
+} from "./museSessions";
 import { isSupportedPlatform, unsupportedPlatformMessage } from "./platform";
 import { ensureHeadlessConsent } from "./safety";
 import type { SessionStore } from "./sessionStore";
+import { appendLiveUiEvent, type TranscriptItem } from "./transcript";
 import { inspectWorkspaceRoot } from "./workspace";
 import type { WorkspaceFolderStore } from "./workspaceFolder";
 
@@ -20,6 +26,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
   private run?: MuseRunHandle;
   private readonly status: vscode.StatusBarItem;
+  private liveTranscript: TranscriptItem[] = [];
+  private hydrateEpoch = 0;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -54,6 +62,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           });
           this.postFolder();
           await this.refreshSetup();
+          await this.hydrateTranscript({ paintCacheFirst: true });
           break;
         case "submit":
           await this.submitPrompt(String(msg.prompt ?? ""));
@@ -63,6 +72,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         case "newSession":
           this.newSession();
+          break;
+        case "pickSession":
+          await this.pickSession();
           break;
         case "openTerminal":
           await vscode.commands.executeCommand("muse.openInteractiveTerminal");
@@ -88,9 +100,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   newSession(): void {
     this.stop();
+    this.hydrateEpoch += 1;
     const id = this.sessions.newSession();
+    this.liveTranscript = [];
     this.post({ type: "session", sessionId: id });
-    this.post({ type: "cleared" });
+    this.post({ type: "history", items: [], source: "new" });
     this.post({
       type: "status",
       text: `New session ${id.slice(0, 8)}…`,
@@ -124,6 +138,74 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     await this.refreshSetup();
     void vscode.window.showInformationMessage(
       `Muse CLI Chat will use folder: ${choice.name}`,
+    );
+  }
+
+  async pickSession(): Promise<void> {
+    if (this.run) {
+      void vscode.window.showWarningMessage("Stop the current Muse run first.");
+      return;
+    }
+    const folder = await this.folders.resolveFolder();
+    if (!folder) {
+      void vscode.window.showErrorMessage("Open a folder to browse Muse sessions.");
+      return;
+    }
+    const root = inspectWorkspaceRoot(folder.fsPath);
+    if (!root.ok) {
+      void vscode.window.showErrorMessage(root.error);
+      return;
+    }
+
+    const sessions = listMuseSessionsForWorkspace(root.path, { limit: 40 });
+    const current = this.sessions.getSessionId();
+    const items: (vscode.QuickPickItem & { sessionId?: string; isNew?: boolean })[] = [
+      {
+        label: "$(add) New session",
+        description: "Start a fresh --session-id",
+        isNew: true,
+      },
+      ...sessions.map((s) => ({
+        label: formatSessionPickLabel(s),
+        description: s.sessionId === current ? "current" : s.sessionId.slice(0, 8),
+        detail: s.firstUserPrompt ?? undefined,
+        sessionId: s.sessionId,
+      })),
+    ];
+
+    const picked = await vscode.window.showQuickPick(items, {
+      title: "Muse CLI Chat: Resume session",
+      placeHolder: "Pick a Muse session to continue (same --session-id)",
+      matchOnDescription: true,
+      matchOnDetail: true,
+    });
+    if (!picked) {
+      return;
+    }
+    if (picked.isNew) {
+      this.newSession();
+      return;
+    }
+    if (!picked.sessionId) {
+      return;
+    }
+    await this.resumeSession(picked.sessionId);
+  }
+
+  async resumeSession(sessionId: string): Promise<void> {
+    this.stop();
+    this.hydrateEpoch += 1;
+    this.sessions.setSessionId(sessionId);
+    this.liveTranscript = this.sessions.getCachedTranscript(sessionId);
+    this.post({ type: "session", sessionId });
+    this.post({
+      type: "history",
+      items: this.liveTranscript,
+      source: "cache",
+    });
+    await this.hydrateTranscript({ paintCacheFirst: false });
+    void vscode.window.showInformationMessage(
+      `Resumed Muse session ${sessionId.slice(0, 8)}…`,
     );
   }
 
@@ -175,6 +257,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const workspacePath = root.path;
     const sessionId = this.sessions.getSessionId();
 
+    this.liveTranscript = appendLiveUiEvent(this.liveTranscript, {
+      kind: "user",
+      prompt: trimmed,
+    });
+    this.sessions.saveTranscript(sessionId, this.liveTranscript);
+
     this.post({ type: "user", prompt: trimmed });
     this.post({ type: "running", running: true });
     this.setRunning(true, sessionId);
@@ -212,6 +300,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               text: `muse exited with code ${code}`,
             });
           }
+          this.sessions.saveTranscript(sessionId, this.liveTranscript);
+          void this.hydrateTranscript({ paintCacheFirst: false });
         },
       });
     } catch (err) {
@@ -283,6 +373,57 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   dispose(): void {
     this.stop();
     this.status.dispose();
+  }
+
+  private async hydrateTranscript(opts: {
+    paintCacheFirst: boolean;
+  }): Promise<void> {
+    const sessionId = this.sessions.getSessionId();
+    const epoch = ++this.hydrateEpoch;
+
+    if (opts.paintCacheFirst) {
+      const cached = this.sessions.getCachedTranscript(sessionId);
+      this.liveTranscript = cached;
+      this.post({ type: "history", items: cached, source: "cache" });
+    }
+
+    const folder = this.folders.getFolder();
+    if (!folder) {
+      return;
+    }
+    const root = inspectWorkspaceRoot(folder.fsPath);
+    if (!root.ok) {
+      return;
+    }
+
+    const listed = listMuseSessionsForWorkspace(root.path, { limit: 80 });
+    const match = listed.find((s) => s.sessionId === sessionId);
+    if (!match && !opts.paintCacheFirst) {
+      // Brand-new id with no Muse log yet.
+      return;
+    }
+
+    const loaded = await loadSessionTranscript({
+      sessionId,
+      workspacePath: root.path,
+      sessionLogPath: match?.sessionLogPath,
+    });
+
+    if (epoch !== this.hydrateEpoch || this.run) {
+      return;
+    }
+
+    if (loaded.items.length === 0 && this.liveTranscript.length > 0) {
+      return;
+    }
+
+    this.liveTranscript = loaded.items;
+    this.sessions.saveTranscript(sessionId, loaded.items);
+    this.post({
+      type: "history",
+      items: loaded.items,
+      source: loaded.source,
+    });
   }
 
   private postFolder(): void {
@@ -393,6 +534,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private handleEvent(event: MuseUiEvent): void {
+    this.liveTranscript = appendLiveUiEvent(this.liveTranscript, event);
     switch (event.kind) {
       case "user":
         // Already posted locally; skip duplicate from stream.
@@ -472,7 +614,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     </div>
     <div class="meta">
       <div id="folder" class="folder"></div>
-      <div id="session" class="session"></div>
+      <button type="button" id="session-btn" class="session-btn" title="Resume or start a Muse session">
+        <span id="session" class="session">————</span>
+      </button>
     </div>
   </header>
   <div id="setup" class="setup" hidden>
@@ -488,10 +632,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <footer class="composer">
     <textarea id="input" rows="3" placeholder="Ask Muse to plan, edit, or validate…"></textarea>
     <div class="actions">
+      <button type="button" id="history" class="secondary">History</button>
       <button type="button" id="stop" class="secondary" disabled>Stop</button>
       <button type="button" id="send" class="primary">Send</button>
     </div>
-    <p class="hint">First send may ask to enable disable-approval (sandbox stays on). Use the terminal command for interactive approvals. Not affiliated with Meta.</p>
+    <p class="hint">History resumes Muse’s --session-id (export-backed). First send may ask to enable disable-approval. Not affiliated with Meta.</p>
   </footer>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>

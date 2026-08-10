@@ -11,8 +11,8 @@ Authentication uses credentials you already configured for Muse (`META_API_KEY`,
 ## What stays local
 
 - Extension settings in VS Code / Cursor
-- Session id and selected multi-root folder in workspace state
-- The sidebar transcript (ephemeral UI; Muse’s own session log is managed by the CLI)
+- Session id, selected multi-root folder, and a local transcript cache in workspace state (for snappy sidebar restore)
+- Muse’s retained session index/logs under the Muse data directory (read to list/resume sessions; managed by the CLI)
 
 ## Third parties
 

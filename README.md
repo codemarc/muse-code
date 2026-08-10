@@ -35,8 +35,8 @@ git clone https://github.com/codemarc/muse-code.git
 cd muse-code
 bun install
 bun run package
-code --install-extension muse-cli-chat-0.1.2.vsix
-# Cursor: cursor --install-extension muse-cli-chat-0.1.2.vsix
+code --install-extension muse-cli-chat-0.1.8.vsix
+# Cursor: cursor --install-extension muse-cli-chat-0.1.8.vsix
 ```
 
 ## Develop
@@ -66,6 +66,7 @@ Open this folder in VS Code/Cursor and press **F5** (Run Muse CLI Chat Extension
 | Muse CLI Chat: Open Interactive Terminal | Full Muse TUI (approvals, slash commands) |
 | Muse CLI Chat: Check Installation | `muse --version` |
 | Muse CLI Chat: Select Workspace Folder | Pick which root to use (multi-root) |
+| Muse CLI Chat: Resume Session | Pick a retained Muse `--session-id` for this folder and reload history |
 
 ## Settings (`muse.*`)
 
@@ -79,6 +80,10 @@ Open this folder in VS Code/Cursor and press **F5** (Run Muse CLI Chat Extension
 | `yolo` | `false` | Disables approval **and** sandbox (dangerous, application-scoped) |
 | `useEchoProvider` | `false` | Offline UI smoke tests |
 | `extraArgs` | `[]` | Extra argv; `--yolo` / `--disable-sandbox` blocked (application-scoped) |
+
+## History
+
+The sidebar keeps Muse’s `--session-id` in workspace state. **History** / the session id chip opens a picker of retained sessions for the current folder (from Muse’s local session index). Choosing one resumes that id for later `muse exec` calls and hydrates the transcript from the session log (with `muse export` as fallback). A small local cache paints instantly while hydration runs.
 
 ## Safety
 

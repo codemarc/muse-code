@@ -103,6 +103,34 @@ body {
   white-space: nowrap;
 }
 
+.session-btn {
+  margin: 0;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  max-width: 160px;
+}
+
+.session-btn:hover:not(:disabled) {
+  border-color: var(--vscode-panel-border, rgba(128, 128, 128, 0.45));
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.12));
+}
+
+.session-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.session-btn .session {
+  opacity: 0.85;
+  max-width: 140px;
+  display: inline-block;
+  vertical-align: bottom;
+}
+
 .transcript {
   flex: 1;
   overflow: auto;

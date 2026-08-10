@@ -2,7 +2,7 @@
   "name": "muse-cli-chat",
   "displayName": "Muse CLI Chat",
   "description": "Unofficial VS Code / Cursor sidebar for Meta Muse Code. Wraps the muse CLI (muse exec --json); not affiliated with Meta.",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "publisher": "codemarc",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -98,6 +98,11 @@
         "command": "muse.selectWorkspaceFolder",
         "title": "Muse CLI Chat: Select Workspace Folder",
         "icon": "$(folder)"
+      },
+      {
+        "command": "muse.pickSession",
+        "title": "Muse CLI Chat: Resume Session",
+        "icon": "$(history)"
       }
     ],
     "menus": {
@@ -106,6 +111,11 @@
           "command": "muse.selectWorkspaceFolder",
           "when": "view == muse.chatView && workspaceFolderCount > 1",
           "group": "navigation@0"
+        },
+        {
+          "command": "muse.pickSession",
+          "when": "view == muse.chatView",
+          "group": "navigation@1"
         },
         {
           "command": "muse.newSession",
