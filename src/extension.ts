@@ -1,13 +1,13 @@
 import * as vscode from "vscode";
 import { ChatViewProvider } from "./chatViewProvider";
-import { readMuseSettings } from "./museCli";
+import { maybeWarnYolo } from "./safety";
 import { SessionStore } from "./sessionStore";
-
-const YOLO_WARN_KEY = "muse.yoloWarned";
+import { WorkspaceFolderStore } from "./workspaceFolder";
 
 export function activate(context: vscode.ExtensionContext): void {
   const sessions = new SessionStore(context);
-  const provider = new ChatViewProvider(context.extensionUri, sessions);
+  const folders = new WorkspaceFolderStore(context);
+  const provider = new ChatViewProvider(context.extensionUri, sessions, folders);
 
   context.subscriptions.push(
     provider,
@@ -26,41 +26,21 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("muse.checkInstallation", () =>
       provider.checkInstallation(),
     ),
+    vscode.commands.registerCommand("muse.selectWorkspaceFolder", () =>
+      provider.selectWorkspaceFolder(),
+    ),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("muse")) {
         void provider.refreshSetup();
         void maybeWarnYolo(context);
       }
     }),
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      void provider.refreshSetup();
+    }),
   );
 
   void maybeWarnYolo(context);
-}
-
-async function maybeWarnYolo(context: vscode.ExtensionContext): Promise<void> {
-  const settings = readMuseSettings();
-  if (!settings.yolo) {
-    await context.globalState.update(YOLO_WARN_KEY, false);
-    return;
-  }
-  if (context.globalState.get<boolean>(YOLO_WARN_KEY)) {
-    return;
-  }
-  const choice = await vscode.window.showWarningMessage(
-    "Muse CLI Chat: muse.yolo is enabled. This disables the OS sandbox and approval prompts. Only use it in workspaces you fully trust.",
-    "I understand",
-    "Disable yolo",
-  );
-  if (choice === "Disable yolo") {
-    await vscode.workspace
-      .getConfiguration("muse")
-      .update("yolo", false, vscode.ConfigurationTarget.Global);
-    await context.globalState.update(YOLO_WARN_KEY, false);
-    return;
-  }
-  if (choice === "I understand") {
-    await context.globalState.update(YOLO_WARN_KEY, true);
-  }
 }
 
 export function deactivate(): void {}

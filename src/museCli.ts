@@ -4,6 +4,7 @@ import {
   buildMuseExecArgs,
   resolveMuseBinary,
   type MuseSettings,
+  type ResolveBinaryResult,
 } from "./museArgs";
 import {
   JsonlLineBuffer,
@@ -11,8 +12,8 @@ import {
   type MuseUiEvent,
 } from "./museJsonl";
 
-export type { MuseSettings };
-export { buildMuseExecArgs, resolveMuseBinary };
+export type { MuseSettings, ResolveBinaryResult };
+export { buildMuseExecArgs, resolveMuseBinary, sanitizeExtraArgs } from "./museArgs";
 
 export interface MuseRunOptions {
   prompt: string;
@@ -21,6 +22,7 @@ export interface MuseRunOptions {
   onEvent: (event: MuseUiEvent) => void;
   onStderr?: (text: string) => void;
   onExit?: (code: number | null, signal: NodeJS.Signals | null) => void;
+  onRejectedExtraArgs?: (rejected: string[]) => void;
 }
 
 export interface MuseRunHandle {
@@ -35,7 +37,7 @@ export function readMuseSettings(): MuseSettings {
     model: cfg.get<string>("model", ""),
     reasoningEffort: cfg.get<string>("reasoningEffort", ""),
     trustWorkspace: cfg.get<boolean>("trustWorkspace", true),
-    disableApproval: cfg.get<boolean>("disableApproval", true),
+    disableApproval: cfg.get<boolean>("disableApproval", false),
     yolo: cfg.get<boolean>("yolo", false),
     useEchoProvider: cfg.get<boolean>("useEchoProvider", false),
     extraArgs: cfg.get<string[]>("extraArgs", []),
@@ -44,9 +46,16 @@ export function readMuseSettings(): MuseSettings {
 
 export async function checkMuseInstallation(): Promise<string> {
   const settings = readMuseSettings();
-  const bin = resolveMuseBinary(settings.executablePath);
+  const resolved = resolveMuseBinary(settings.executablePath);
+  if (!resolved.ok) {
+    throw new Error(resolved.error);
+  }
+  const bin = resolved.path;
   return await new Promise((resolve, reject) => {
-    const child = spawn(bin, ["--version"], { env: process.env });
+    const child = spawn(bin, ["--version"], {
+      env: process.env,
+      shell: false,
+    });
     let out = "";
     let err = "";
     child.stdout.on("data", (d) => {
@@ -68,17 +77,25 @@ export async function checkMuseInstallation(): Promise<string> {
 
 export function startMuseExec(opts: MuseRunOptions): MuseRunHandle {
   const settings = readMuseSettings();
-  const bin = resolveMuseBinary(settings.executablePath);
-  const args = buildMuseExecArgs(settings, {
+  const resolved = resolveMuseBinary(settings.executablePath);
+  if (!resolved.ok) {
+    throw new Error(resolved.error);
+  }
+
+  const { args, rejectedExtraArgs } = buildMuseExecArgs(settings, {
     prompt: opts.prompt,
     workspacePath: opts.workspacePath,
     sessionId: opts.sessionId,
   });
+  if (rejectedExtraArgs.length) {
+    opts.onRejectedExtraArgs?.(rejectedExtraArgs);
+  }
 
-  const child = spawn(bin, args, {
+  const child = spawn(resolved.path, args, {
     cwd: opts.workspacePath,
     env: process.env,
     stdio: ["ignore", "pipe", "pipe"],
+    shell: false,
   });
 
   const buffer = new JsonlLineBuffer();

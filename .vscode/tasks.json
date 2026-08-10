@@ -2,13 +2,48 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "type": "npm",
-      "script": "compile",
+      "label": "bun: compile",
+      "type": "shell",
+      "command": "bun run compile",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {}
+      },
       "group": {
         "kind": "build",
         "isDefault": true
       },
+      "presentation": {
+        "reveal": "silent",
+        "panel": "shared",
+        "showReuseMessage": false
+      },
       "problemMatcher": []
+    },
+    {
+      "label": "bun: watch",
+      "type": "shell",
+      "command": "bun run watch",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "presentation": {
+        "reveal": "silent",
+        "panel": "dedicated",
+        "showReuseMessage": false
+      },
+      "problemMatcher": {
+        "owner": "esbuild",
+        "pattern": {
+          "regexp": "."
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".*",
+          "endsPattern": "watching"
+        }
+      }
     }
   ]
 }

@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.1.7] - 2026-08-10
+
+### Fixed
+
+- Extension Development Host (F5) uses `bun: compile` / `bun: watch` instead of `npm: compile`
+
+## [0.1.6] - 2026-08-10
+
+### Added
+
+- GitHub Actions CI (`bun` test, typecheck, vsce package)
+- `SECURITY.md` and `PRIVACY.md` for vulnerability reporting and data-flow disclosure
+
+## [0.1.5] - 2026-08-10
+
+### Fixed
+
+- Setup no longer reports ready on `muse --version` alone; probes `META_API_KEY`, stored `~/.config/muse/auth.json`, or echo provider
+
+## [0.1.4] - 2026-08-10
+
+### Fixed
+
+- Multi-root workspaces: pick and remember a folder (Quick Pick + view title command); no longer always uses the first root
+
+## [0.1.3] - 2026-08-10
+
+### Fixed
+
+- Preflight rejects symlink / reparse-point workspace roots with a clear fix (setup banner + before send / interactive terminal)
+
+## [0.1.2] - 2026-08-10
+
+### Security
+
+- Launch interactive Muse via `shellPath` (no `sendText` shell injection)
+- Application-scope `executablePath`, `extraArgs`, `yolo`, and `disableApproval`
+- Block `--yolo` / `--disable-sandbox` smuggled through `extraArgs`
+- Harden binary resolution: `"muse"` or an existing file path only
+- Default `disableApproval` to false; modal consent on first headless send
+- Declare `untrustedWorkspaces` / `virtualWorkspaces` unsupported
+
 ## [0.1.1] - 2026-08-10
 
 ### Changed

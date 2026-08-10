@@ -5,11 +5,13 @@
   const sendBtn = document.getElementById("send");
   const stopBtn = document.getElementById("stop");
   const sessionEl = document.getElementById("session");
+  const folderEl = document.getElementById("folder");
   const setupEl = document.getElementById("setup");
   const setupMsg = document.getElementById("setup-msg");
   const setupInstall = document.getElementById("setup-install");
   const recheckBtn = document.getElementById("recheck");
   const docsBtn = document.getElementById("docs");
+  const pickFolderBtn = document.getElementById("pick-folder");
 
   let running = false;
   let museReady = false;
@@ -48,12 +50,15 @@
     museReady = !!msg.ok;
     if (museReady) {
       setupEl.hidden = true;
+      pickFolderBtn.hidden = true;
       setRunning(running);
       return;
     }
     setupEl.hidden = false;
     setupMsg.textContent = msg.message || "Muse CLI is not ready.";
     setupInstall.textContent = msg.installHint || "";
+    setupInstall.hidden = !msg.installHint;
+    pickFolderBtn.hidden = !msg.needsFolderPick;
     setRunning(running);
   }
 
@@ -84,6 +89,9 @@
   docsBtn.addEventListener("click", function () {
     vscode.postMessage({ type: "openDocs" });
   });
+  pickFolderBtn.addEventListener("click", function () {
+    vscode.postMessage({ type: "selectFolder" });
+  });
 
   input.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -101,6 +109,18 @@
     switch (msg.type) {
       case "session":
         sessionEl.textContent = (msg.sessionId || "").slice(0, 8);
+        break;
+      case "folder":
+        if (msg.name) {
+          folderEl.textContent = msg.multi ? "folder: " + msg.name : msg.name;
+          folderEl.title = msg.path || "";
+        } else if (msg.multi) {
+          folderEl.textContent = "folder: (pick one)";
+          folderEl.title = "";
+        } else {
+          folderEl.textContent = "";
+          folderEl.title = "";
+        }
         break;
       case "setup":
         setSetup(msg);

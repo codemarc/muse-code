@@ -2,7 +2,7 @@
   "name": "muse-cli-chat",
   "displayName": "Muse CLI Chat",
   "description": "Unofficial VS Code / Cursor sidebar for Meta Muse Code. Wraps the muse CLI (muse exec --json); not affiliated with Meta.",
-  "version": "0.1.1",
+  "version": "0.1.7",
   "publisher": "codemarc",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -18,6 +18,7 @@
     "url": "https://github.com/codemarc/muse-code/issues"
   },
   "homepage": "https://github.com/codemarc/muse-code",
+  "qna": "https://github.com/codemarc/muse-code/blob/main/PRIVACY.md",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -34,6 +35,16 @@
     "coding-agent",
     "cli"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Muse CLI Chat runs a local coding agent that can edit files and execute commands in the workspace."
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "Muse Code requires a local filesystem workspace."
+    }
+  },
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
@@ -82,10 +93,20 @@
       {
         "command": "muse.checkInstallation",
         "title": "Muse CLI Chat: Check Installation"
+      },
+      {
+        "command": "muse.selectWorkspaceFolder",
+        "title": "Muse CLI Chat: Select Workspace Folder",
+        "icon": "$(folder)"
       }
     ],
     "menus": {
       "view/title": [
+        {
+          "command": "muse.selectWorkspaceFolder",
+          "when": "view == muse.chatView && workspaceFolderCount > 1",
+          "group": "navigation@0"
+        },
         {
           "command": "muse.newSession",
           "when": "view == muse.chatView",
@@ -116,7 +137,8 @@
         "muse.executablePath": {
           "type": "string",
           "default": "muse",
-          "description": "Path to the Muse Code binary (muse). Default resolves via PATH; ~/.local/bin/muse is also tried."
+          "scope": "application",
+          "description": "Path to the Muse Code binary. Use \"muse\" (PATH) or an absolute path to the binary file. Application-scoped so workspaces cannot override it."
         },
         "muse.model": {
           "type": "string",
@@ -144,13 +166,15 @@
         },
         "muse.disableApproval": {
           "type": "boolean",
-          "default": true,
-          "description": "Pass --disable-approval (required for headless runs; sandbox stays on unless yolo is enabled). Use Open Interactive Terminal for staged approvals."
+          "default": false,
+          "scope": "application",
+          "markdownDescription": "Pass `--disable-approval` for headless sidebar runs (sandbox stays on unless yolo is enabled). Defaults off; the extension prompts on first send. Prefer **Open Interactive Terminal** for staged approvals. Application-scoped."
         },
         "muse.yolo": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "**Dangerous.** Pass `--yolo` (disables approval and sandbox, trusts workspace). Prefer `disableApproval` with the OS sandbox. Confirm you trust the workspace before enabling."
+          "scope": "application",
+          "markdownDescription": "**Dangerous.** Pass `--yolo` (disables approval and sandbox, trusts workspace). Prefer `disableApproval` with the OS sandbox. Application-scoped so workspaces cannot enable it."
         },
         "muse.useEchoProvider": {
           "type": "boolean",
@@ -163,7 +187,8 @@
             "type": "string"
           },
           "default": [],
-          "description": "Extra argv appended to muse exec (escape hatch)."
+          "scope": "application",
+          "markdownDescription": "Extra argv appended to `muse exec`. Application-scoped. `--yolo` and `--disable-sandbox` are blocked here; use `muse.yolo` instead."
         }
       }
     }

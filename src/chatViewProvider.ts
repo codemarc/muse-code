@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { probeMuseAuth } from "./museAuth";
 import {
   checkMuseInstallation,
   resolveMuseBinary,
@@ -8,7 +9,10 @@ import {
 } from "./museCli";
 import type { MuseUiEvent } from "./museJsonl";
 import { isSupportedPlatform, unsupportedPlatformMessage } from "./platform";
+import { ensureHeadlessConsent } from "./safety";
 import type { SessionStore } from "./sessionStore";
+import { inspectWorkspaceRoot } from "./workspace";
+import type { WorkspaceFolderStore } from "./workspaceFolder";
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "muse.chatView";
@@ -20,6 +24,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly sessions: SessionStore,
+    private readonly folders: WorkspaceFolderStore,
   ) {
     this.status = vscode.window.createStatusBarItem(
       vscode.StatusBarAlignment.Left,
@@ -47,6 +52,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             type: "session",
             sessionId: this.sessions.getSessionId(),
           });
+          this.postFolder();
           await this.refreshSetup();
           break;
         case "submit":
@@ -63,6 +69,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         case "recheck":
           await this.refreshSetup();
+          break;
+        case "selectFolder":
+          await this.selectWorkspaceFolder();
           break;
         case "openDocs":
           await vscode.env.openExternal(
@@ -99,8 +108,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   async refreshSetup(): Promise<void> {
+    this.postFolder();
     const setup = await this.probeSetup();
     this.post({ type: "setup", ...setup });
+  }
+
+  async selectWorkspaceFolder(): Promise<void> {
+    const choice = await this.folders.resolveFolder({ forcePick: true });
+    if (!choice) {
+      return;
+    }
+    // Muse sessions are workspace-scoped; switching roots starts a new session.
+    this.newSession();
+    this.postFolder();
+    await this.refreshSetup();
+    void vscode.window.showInformationMessage(
+      `Muse CLI Chat will use folder: ${choice.name}`,
+    );
   }
 
   async submitPrompt(prompt: string): Promise<void> {
@@ -113,6 +137,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    const folder = await this.folders.resolveFolder();
+    if (!folder) {
+      void vscode.window.showErrorMessage(
+        "Open a folder (or pick one in a multi-root workspace) to run Muse Code.",
+      );
+      await this.refreshSetup();
+      return;
+    }
+
+    const root = inspectWorkspaceRoot(folder.fsPath);
+    if (!root.ok) {
+      this.post({
+        type: "setup",
+        ok: false,
+        message: root.error,
+        installHint: "",
+        platformOk: true,
+        needsFolderPick: (vscode.workspace.workspaceFolders?.length ?? 0) > 1,
+      });
+      void vscode.window.showErrorMessage(root.error);
+      return;
+    }
+
+    this.postFolder();
     const setup = await this.probeSetup();
     this.post({ type: "setup", ...setup });
     if (!setup.ok) {
@@ -120,45 +168,60 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    const folder = vscode.workspace.workspaceFolders?.[0];
-    if (!folder) {
-      void vscode.window.showErrorMessage("Open a folder to run Muse Code.");
+    if (!(await ensureHeadlessConsent())) {
       return;
     }
 
-    // Muse refuses symlink / reparse-point workspace roots.
-    const workspacePath = folder.uri.fsPath;
+    const workspacePath = root.path;
     const sessionId = this.sessions.getSessionId();
 
     this.post({ type: "user", prompt: trimmed });
     this.post({ type: "running", running: true });
     this.setRunning(true, sessionId);
 
-    this.run = startMuseExec({
-      prompt: trimmed,
-      workspacePath,
-      sessionId,
-      onEvent: (event) => this.handleEvent(event),
-      onStderr: (text) => {
-        const line = text.trim();
-        if (line) {
-          this.post({ type: "stderr", text: line });
-        }
-      },
-      onExit: (code, signal) => {
-        this.run = undefined;
-        this.setRunning(false);
-        this.post({ type: "running", running: false });
-        if (signal === "SIGINT" || signal === "SIGTERM") {
-          this.post({ type: "status", text: "Interrupted" });
-        } else if (code !== 0 && code !== null) {
+    try {
+      this.run = startMuseExec({
+        prompt: trimmed,
+        workspacePath,
+        sessionId,
+        onEvent: (event) => this.handleEvent(event),
+        onRejectedExtraArgs: (rejected) => {
           this.post({
             type: "status",
-            text: `muse exited with code ${code}`,
+            text: `Ignored blocked extraArgs: ${rejected.join(", ")}`,
           });
-        }
-      },
-    });
+          void vscode.window.showWarningMessage(
+            `Muse CLI Chat ignored blocked muse.extraArgs: ${rejected.join(", ")}. Use muse.yolo only via the dedicated setting.`,
+          );
+        },
+        onStderr: (text) => {
+          const line = text.trim();
+          if (line) {
+            this.post({ type: "stderr", text: line });
+          }
+        },
+        onExit: (code, signal) => {
+          this.run = undefined;
+          this.setRunning(false);
+          this.post({ type: "running", running: false });
+          if (signal === "SIGINT" || signal === "SIGTERM") {
+            this.post({ type: "status", text: "Interrupted" });
+          } else if (code !== 0 && code !== null) {
+            this.post({
+              type: "status",
+              text: `muse exited with code ${code}`,
+            });
+          }
+        },
+      });
+    } catch (err) {
+      this.run = undefined;
+      this.setRunning(false);
+      this.post({ type: "running", running: false });
+      const msg = err instanceof Error ? err.message : String(err);
+      this.post({ type: "error", text: msg });
+      void vscode.window.showErrorMessage(msg);
+    }
   }
 
   async sendSelection(): Promise<void> {
@@ -179,25 +242,41 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       void vscode.window.showErrorMessage(unsupportedPlatformMessage());
       return;
     }
-    const folder = vscode.workspace.workspaceFolders?.[0];
+    const folder = await this.folders.resolveFolder();
+    let cwd: string | undefined;
+    if (folder) {
+      const root = inspectWorkspaceRoot(folder.fsPath);
+      if (!root.ok) {
+        void vscode.window.showErrorMessage(root.error);
+        return;
+      }
+      cwd = root.path;
+    }
     const settings = readMuseSettings();
-    const bin = resolveMuseBinary(settings.executablePath);
+    const resolved = resolveMuseBinary(settings.executablePath);
+    if (!resolved.ok) {
+      void vscode.window.showErrorMessage(resolved.error);
+      return;
+    }
+    // Launch Muse as the terminal process (no shell, no sendText injection).
     const terminal = vscode.window.createTerminal({
       name: "Muse Code",
-      cwd: folder?.uri.fsPath,
+      cwd,
+      shellPath: resolved.path,
     });
     terminal.show();
-    const cmd = bin.includes(" ") ? `"${bin}"` : bin;
-    terminal.sendText(cmd);
   }
 
   async checkInstallation(): Promise<void> {
     const setup = await this.probeSetup();
     this.post({ type: "setup", ...setup });
     if (setup.ok) {
-      void vscode.window.showInformationMessage(`Muse found: ${setup.version}`);
+      void vscode.window.showInformationMessage(setup.message);
     } else {
-      void vscode.window.showErrorMessage(setup.message);
+      const detail = setup.installHint
+        ? `${setup.message}\n\n${setup.installHint}`
+        : setup.message;
+      void vscode.window.showErrorMessage(detail);
     }
   }
 
@@ -206,15 +285,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.status.dispose();
   }
 
+  private postFolder(): void {
+    const folder = this.folders.getFolder();
+    const multi = (vscode.workspace.workspaceFolders?.length ?? 0) > 1;
+    this.post({
+      type: "folder",
+      name: folder?.name ?? null,
+      path: folder?.fsPath ?? null,
+      multi,
+    });
+  }
+
   private async probeSetup(): Promise<{
     ok: boolean;
     version?: string;
     message: string;
     installHint: string;
     platformOk: boolean;
+    needsFolderPick?: boolean;
   }> {
     const installHint =
       "curl -fsSL https://dev.meta.ai/install.sh | sh";
+    const multi = (vscode.workspace.workspaceFolders?.length ?? 0) > 1;
 
     if (!isSupportedPlatform()) {
       return {
@@ -225,12 +317,67 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       };
     }
 
+    const roots = vscode.workspace.workspaceFolders ?? [];
+    if (roots.length === 0) {
+      try {
+        const version = await checkMuseInstallation();
+        return {
+          ok: false,
+          version,
+          message: `Muse found (${version}). Open a folder (not a symlink root) to chat.`,
+          installHint: "",
+          platformOk: true,
+        };
+      } catch {
+        // Fall through to CLI missing message below.
+      }
+    } else {
+      const folder = this.folders.getFolder();
+      if (!folder) {
+        return {
+          ok: false,
+          message:
+            "Multi-root workspace: choose which folder Muse should use.",
+          installHint: "",
+          platformOk: true,
+          needsFolderPick: true,
+        };
+      }
+      const root = inspectWorkspaceRoot(folder.fsPath);
+      if (!root.ok) {
+        return {
+          ok: false,
+          message: root.error,
+          installHint: "",
+          platformOk: true,
+          needsFolderPick: multi,
+        };
+      }
+    }
+
     try {
       const version = await checkMuseInstallation();
+      const settings = readMuseSettings();
+      const auth = probeMuseAuth({ useEchoProvider: settings.useEchoProvider });
+      if (!auth.ok) {
+        return {
+          ok: false,
+          version,
+          message: `${auth.message}\nCLI: ${version}`,
+          installHint: auth.hint,
+          platformOk: true,
+        };
+      }
+      const folder = this.folders.getFolder();
+      const parts = [
+        `Muse ready (${version})`,
+        auth.detail,
+        folder ? folder.name : null,
+      ].filter(Boolean);
       return {
         ok: true,
         version,
-        message: `Muse ready (${version})`,
+        message: parts.join(" · "),
         installHint,
         platformOk: true,
       };
@@ -323,12 +470,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       <div class="brand">Muse CLI Chat</div>
       <div class="unofficial">Unofficial · wraps Meta Muse Code</div>
     </div>
-    <div id="session" class="session"></div>
+    <div class="meta">
+      <div id="folder" class="folder"></div>
+      <div id="session" class="session"></div>
+    </div>
   </header>
   <div id="setup" class="setup" hidden>
     <p id="setup-msg" class="setup-msg"></p>
     <pre id="setup-install" class="setup-install"></pre>
     <div class="setup-actions">
+      <button type="button" id="pick-folder" class="secondary" hidden>Choose folder</button>
       <button type="button" id="recheck" class="secondary">Re-check</button>
       <button type="button" id="docs" class="secondary">Docs</button>
     </div>
@@ -340,7 +491,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       <button type="button" id="stop" class="secondary" disabled>Stop</button>
       <button type="button" id="send" class="primary">Send</button>
     </div>
-    <p class="hint">Headless runs use sandbox + disable-approval by default. Use the terminal command for interactive approvals. Not affiliated with Meta.</p>
+    <p class="hint">First send may ask to enable disable-approval (sandbox stays on). Use the terminal command for interactive approvals. Not affiliated with Meta.</p>
   </footer>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
