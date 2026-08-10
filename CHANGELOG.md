@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.1] - 2026-08-10
+
+### Changed
+
+- Moved source to standalone repo [codemarc/muse-code](https://github.com/codemarc/muse-code) (no longer under `bltcore-com/tools`)
+
 ## [0.1.0] - 2026-08-07
 
 ### Added

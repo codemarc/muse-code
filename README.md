@@ -29,8 +29,8 @@ git clone https://github.com/codemarc/muse-code.git
 cd muse-code
 bun install
 bun run package
-code --install-extension muse-cli-chat-0.1.0.vsix
-# Cursor: cursor --install-extension muse-cli-chat-0.1.0.vsix
+code --install-extension muse-cli-chat-0.1.1.vsix
+# Cursor: cursor --install-extension muse-cli-chat-0.1.1.vsix
 ```
 
 ## Develop
@@ -89,8 +89,8 @@ bun run check
 ## Publish
 
 1. Create publisher `codemarc` on [VS Code Marketplace](https://marketplace.visualstudio.com/manage) and/or [Open VSX](https://open-vsx.org/) (change `publisher` in `package.json` if you use another id).
-2. `bun install` then `bun run package` (produces `muse-cli-chat-0.1.0.vsix`).
-3. Open VSX (good for Cursor): `npx ovsx publish muse-cli-chat-0.1.0.vsix -p <token>`
+2. `bun install` then `bun run package` (produces `muse-cli-chat-0.1.1.vsix`).
+3. Open VSX (good for Cursor): `npx ovsx publish muse-cli-chat-0.1.1.vsix -p <token>`
 4. VS Code Marketplace: `bunx vsce publish --no-dependencies` (after `vsce login`)
 
 Production compile minify: `NODE_ENV=production bun run compile`.

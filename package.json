@@ -34,15 +34,6 @@
     "coding-agent",
     "cli"
   ],
-  "activationEvents": [
-    "onView:muse.chatView",
-    "onCommand:muse.openChat",
-    "onCommand:muse.sendSelection",
-    "onCommand:muse.newSession",
-    "onCommand:muse.stop",
-    "onCommand:muse.openInteractiveTerminal",
-    "onCommand:muse.checkInstallation"
-  ],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
