@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.9] - 2026-08-11
+
+### Changed
+
+- New icon: Meta AI ring geometry (from `Meta AI Logo (Ring Only).svg`) with gradient `#0179ec → #5ffac1 → #005fe3 → #ec7dd9`, centered teal M-wave — `media/icon.png` (128×128, ring `r42` centered at `64,64`, no wordmark) and `media/muse.svg` activityBar (ring `r9` at `12,12` centered to fill `24×24`, M centered inside, `currentColor`)
+
 ## [0.1.8] - 2026-08-10
 
 ### Added
