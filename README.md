@@ -1,5 +1,7 @@
 # Muse CLI Chat (unofficial)
 
+### [Read my Blog Inception: Planting Muse Inside Muse](https://blog.codemarc.net/inception-planting-muse-inside-muse)
+
 VS Code / Cursor sidebar chat that drives Meta’s **Muse Code** CLI (`muse exec --json`). The agent harness stays Muse; this extension is only the IDE UI.
 
 **Not affiliated with Meta.** Muse Code, Muse Spark, and related marks belong to Meta. Install and authenticate Muse separately: [Muse Code docs](https://dev.meta.ai/docs/muse-code).
