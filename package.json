@@ -2,7 +2,7 @@
   "name": "muse-cli-chat",
   "displayName": "Muse CLI Chat",
   "description": "Unofficial VS Code / Cursor sidebar for Meta Muse Code. Wraps the muse CLI (muse exec --json); not affiliated with Meta.",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "publisher": "codemarc",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -199,6 +199,15 @@
           "default": [],
           "scope": "application",
           "markdownDescription": "Extra argv appended to `muse exec`. Application-scoped. `--yolo` and `--disable-sandbox` are blocked here; use `muse.yolo` instead."
+        },
+        "muse.toolOutputFormat": {
+          "type": "string",
+          "enum": [
+            "readable",
+            "json"
+          ],
+          "default": "readable",
+          "description": "Default view for tool results in the chat sidebar. Readable shows terminal-style output for shell/exec results; JSON shows the raw payload. Each tool card can still toggle views."
         }
       }
     }

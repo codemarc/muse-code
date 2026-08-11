@@ -79,14 +79,14 @@ export function transcriptFromSessionEnvelopes(
 
     if (event.kind === "tool_result_batch_committed" && Array.isArray(event.results)) {
       for (const result of event.results) {
-        const text = truncateText(String(result.text ?? "").trim());
-        if (!text) {
+        const raw = String(result.text ?? "").trim();
+        if (!raw) {
           continue;
         }
         items.push({
           type: "tool",
           name: result.tool_call_id?.slice(0, 12) || "tool",
-          text,
+          resultRaw: truncateText(raw, 32000),
         });
       }
     }

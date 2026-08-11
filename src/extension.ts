@@ -33,6 +33,9 @@ export function activate(context: vscode.ExtensionContext): void {
       provider.pickSession(),
     ),
     vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("muse.toolOutputFormat")) {
+        provider.postConfig();
+      }
       if (e.affectsConfiguration("muse")) {
         void provider.refreshSetup();
         void maybeWarnYolo(context);

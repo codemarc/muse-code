@@ -176,6 +176,98 @@ body {
   padding: 4px 8px;
 }
 
+.msg.tool-card {
+  padding: 6px 8px 8px;
+}
+
+.tool-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin-bottom: 6px;
+}
+
+.tool-header .label {
+  flex: 1 1 auto;
+  margin-bottom: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-exit {
+  font-size: 10px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--vscode-badge-background, rgba(128, 128, 128, 0.25));
+  color: var(--vscode-badge-foreground, inherit);
+}
+
+.tool-exit-ok {
+  opacity: 0.85;
+}
+
+.tool-exit-fail {
+  background: var(--vscode-inputValidation-errorBackground, rgba(244, 68, 68, 0.15));
+  color: var(--vscode-errorForeground, #f44);
+}
+
+.tool-actions {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.tool-toggle {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.45));
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.8;
+}
+
+.tool-toggle:hover {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.12));
+}
+
+.tool-toggle.active {
+  opacity: 1;
+  border-color: var(--vscode-focusBorder);
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.12));
+}
+
+.tool-body {
+  margin: 0;
+  padding: 8px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--vscode-editor-background);
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  border-radius: 4px;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.tool-link {
+  color: var(--vscode-textLink-foreground, #3794ff);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.tool-link:hover {
+  color: var(--vscode-textLink-activeForeground, #3794ff);
+}
+
 .msg.error {
   border-left-color: var(--vscode-errorForeground, #f44);
   color: var(--vscode-errorForeground, #f44);

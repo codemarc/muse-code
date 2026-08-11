@@ -3,12 +3,13 @@
 export type TranscriptItem =
   | { type: "user"; text: string }
   | { type: "assistant"; text: string }
-  | { type: "tool"; name: string; text: string }
+  | { type: "tool"; name: string; resultRaw?: string; text?: string }
   | { type: "status"; text: string }
   | { type: "task"; text: string }
   | { type: "error"; text: string };
 
 const MAX_TOOL_CHARS = 2000;
+const MAX_TOOL_CACHE_CHARS = 32000;
 const MAX_ITEMS = 400;
 
 export function truncateText(text: string, max = MAX_TOOL_CHARS): string {
@@ -38,6 +39,7 @@ export function appendLiveUiEvent(
     text?: string;
     name?: string;
     result?: string;
+    resultRaw?: string;
     error?: string;
     line?: string;
     terminal?: string;
@@ -86,7 +88,10 @@ export function appendLiveUiEvent(
       next.push({
         type: "tool",
         name: event.name || "tool",
-        text: truncateText(event.result ?? ""),
+        resultRaw: truncateText(
+          event.resultRaw ?? event.result ?? "",
+          MAX_TOOL_CACHE_CHARS,
+        ),
       });
       break;
     case "task":

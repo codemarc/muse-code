@@ -13,9 +13,11 @@ import {
   formatSessionPickLabel,
   listMuseSessionsForWorkspace,
 } from "./museSessions";
+import { openToolLink } from "./openLink";
 import { isSupportedPlatform, unsupportedPlatformMessage } from "./platform";
 import { ensureHeadlessConsent } from "./safety";
 import type { SessionStore } from "./sessionStore";
+import { formatToolResult } from "./toolResultFormat";
 import { appendLiveUiEvent, type TranscriptItem } from "./transcript";
 import { inspectWorkspaceRoot } from "./workspace";
 import type { WorkspaceFolderStore } from "./workspaceFolder";
@@ -61,6 +63,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             sessionId: this.sessions.getSessionId(),
           });
           this.postFolder();
+          this.postConfig();
           await this.refreshSetup();
           await this.hydrateTranscript({ paintCacheFirst: true });
           break;
@@ -90,7 +93,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             vscode.Uri.parse("https://dev.meta.ai/docs/muse-code"),
           );
           break;
+        case "openLink":
+          await this.handleOpenLink(String(msg.href ?? ""));
+          break;
       }
+    });
+  }
+
+  postConfig(): void {
+    const cfg = vscode.workspace.getConfiguration("muse");
+    this.post({
+      type: "config",
+      toolOutputFormat: cfg.get<"readable" | "json">("toolOutputFormat", "readable"),
     });
   }
 
@@ -200,7 +214,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: "session", sessionId });
     this.post({
       type: "history",
-      items: this.liveTranscript,
+      items: this.enrichItemsForWebview(this.liveTranscript),
       source: "cache",
     });
     await this.hydrateTranscript({ paintCacheFirst: false });
@@ -384,7 +398,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (opts.paintCacheFirst) {
       const cached = this.sessions.getCachedTranscript(sessionId);
       this.liveTranscript = cached;
-      this.post({ type: "history", items: cached, source: "cache" });
+      this.post({
+        type: "history",
+        items: this.enrichItemsForWebview(cached),
+        source: "cache",
+      });
     }
 
     const folder = this.folders.getFolder();
@@ -421,7 +439,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.sessions.saveTranscript(sessionId, loaded.items);
     this.post({
       type: "history",
-      items: loaded.items,
+      items: this.enrichItemsForWebview(loaded.items),
       source: loaded.source,
     });
   }
@@ -554,7 +572,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.post({ type: "status", text: event.text });
         break;
       case "tool":
-        this.post({ type: "tool", name: event.name, result: event.result });
+        this.post({
+          type: "tool",
+          name: event.name,
+          resultRaw: event.resultRaw,
+          resultView: event.resultView,
+          execMeta: event.execMeta,
+        });
         break;
       case "task":
         this.post({ type: "task", text: event.text });
@@ -585,6 +609,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private post(message: unknown): void {
     void this.view?.webview.postMessage(message);
+  }
+
+  private enrichItemsForWebview(items: TranscriptItem[]): unknown[] {
+    return items.map((item) => this.enrichItemForWebview(item));
+  }
+
+  private enrichItemForWebview(item: TranscriptItem): unknown {
+    if (item.type !== "tool") {
+      return item;
+    }
+    const raw = item.resultRaw ?? item.text ?? "";
+    const formatted = formatToolResult(raw);
+    return {
+      type: "tool",
+      name: item.name,
+      resultRaw: formatted.resultRaw,
+      resultView: formatted.resultView,
+      execMeta: formatted.execMeta,
+    };
+  }
+
+  private async handleOpenLink(href: string): Promise<void> {
+    const folder = this.folders.getFolder();
+    const ok = await openToolLink(href, folder?.uri);
+    if (!ok) {
+      void vscode.window.showWarningMessage(`Could not open link: ${href}`);
+    }
   }
 
   private getHtml(webview: vscode.Webview): string {

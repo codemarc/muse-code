@@ -1,3 +1,5 @@
+import { formatToolResult, type ExecMeta } from "./toolResultFormat";
+
 /** Muse Code JSONL envelope from `muse exec --json`. */
 
 export interface MuseStreamRef {
@@ -25,7 +27,13 @@ export type MuseUiEvent =
   | { kind: "assistant_delta"; text: string }
   | { kind: "assistant_final"; text: string; terminal: string; reason?: string | null }
   | { kind: "status"; text: string }
-  | { kind: "tool"; name: string; result: string }
+  | {
+      kind: "tool";
+      name: string;
+      resultRaw: string;
+      resultView: string | null;
+      execMeta?: ExecMeta;
+    }
   | { kind: "task"; text: string }
   | { kind: "unknown"; payloadType: string; payload: Record<string, unknown> }
   | { kind: "parse_error"; line: string; error: string };
@@ -78,8 +86,9 @@ export function recordToUiEvent(record: MuseRecord): MuseUiEvent | null {
       const name = String(
         payload.tool_name ?? payload.name ?? payload.tool ?? "tool",
       );
-      const result = stringifyPayload(payload.result ?? payload.output ?? payload);
-      return { kind: "tool", name, result };
+      const rawValue = payload.result ?? payload.output ?? payload;
+      const formatted = formatToolResult(rawValue);
+      return { kind: "tool", name, ...formatted };
     }
     case "runtime.command.accepted":
     case "session.run.linked":
@@ -111,17 +120,6 @@ export function recordToUiEvent(record: MuseRecord): MuseUiEvent | null {
       }
       return { kind: "unknown", payloadType: type, payload };
     }
-  }
-}
-
-function stringifyPayload(value: unknown): string {
-  if (typeof value === "string") {
-    return value;
-  }
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
   }
 }
 

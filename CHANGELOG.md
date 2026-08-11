@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.10] - 2026-08-11
+
+### Added
+
+- Readable tool output cards for muse exec shell results: command, exit code, and stdout in a terminal-style view
+- `muse.toolOutputFormat` setting (`readable` default, or `json`); each tool card can toggle Readable / Raw
+- Clickable URLs and local file paths (including `.html`) in tool output; opens in the system browser or editor
+
 ## [0.1.9] - 2026-08-11
 
 ### Changed

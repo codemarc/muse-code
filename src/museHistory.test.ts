@@ -17,7 +17,7 @@ describe("museHistory", () => {
     const items = transcriptFromSessionJsonl(fixture);
     expect(items.map((i) => i.type)).toEqual(["user", "tool", "assistant"]);
     expect(items[0]).toEqual({ type: "user", text: "Reply with exactly: pong" });
-    expect(items[1]).toMatchObject({ type: "tool", text: "ok from tool" });
+    expect(items[1]).toMatchObject({ type: "tool", resultRaw: "ok from tool" });
     expect(items[2]).toEqual({ type: "assistant", text: "pong" });
   });
 

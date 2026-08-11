@@ -82,6 +82,7 @@ Open this folder in VS Code/Cursor and press **F5** (Run Muse CLI Chat Extension
 | `yolo` | `false` | Disables approval **and** sandbox (dangerous, application-scoped) |
 | `useEchoProvider` | `false` | Offline UI smoke tests |
 | `extraArgs` | `[]` | Extra argv; `--yolo` / `--disable-sandbox` blocked (application-scoped) |
+| `toolOutputFormat` | `readable` | Default tool result view: `readable` (terminal-style for exec) or `json` (raw payload). Each card can toggle. |
 
 ## History
 
