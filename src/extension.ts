@@ -23,6 +23,16 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("muse.openInteractiveTerminal", () =>
       provider.openInteractiveTerminal(),
     ),
+    vscode.commands.registerCommand("muse.openWebsite", () =>
+      vscode.env.openExternal(
+        vscode.Uri.parse("https://developer.meta.com/ai/products/muse-code/"),
+      ),
+    ),
+    vscode.commands.registerCommand("muse.openBilling", () =>
+      vscode.env.openExternal(
+        vscode.Uri.parse("https://dev.meta.ai/billing/"),
+      ),
+    ),
     vscode.commands.registerCommand("muse.checkInstallation", () =>
       provider.checkInstallation(),
     ),
