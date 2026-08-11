@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.11] - 2026-08-11
+
+### Added
+
+- View title buttons: open Muse Code website and Meta AI billing
+
 ## [0.1.10] - 2026-08-11
 
 ### Added
