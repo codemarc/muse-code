@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.1.14] - 2026-08-11
+
+### Added
+
+- **Clean Up Sessions**: multi-select delete of Muse sessions for the current folder (index rows + log dirs under Muse’s data root). Available from History and **Muse CLI Chat: Clean Up Sessions**
+
+## [0.1.13] - 2026-08-11
+
+### Added
+
+- Canvas **Preview** mode for Markdown and HTML tool output (sandboxed iframe). Shown when output looks like a document; exec envelopes preview stdout only. **Open externally** when a `.html`/`.md` path is detected
+
+### Fixed
+
+- Local `.html` / `.htm` links open via the OS (`open` / `xdg-open`) so the default browser gets `file://…` (avoids Cursor/VS Code `openExternal` “No application found to open URL”). Other local paths reveal in Finder/Files
+
+## [0.1.12] - 2026-08-11
+
+### Added
+
+- **Open in canvas**: full-height side panel for tool results (Readable / Raw, clickable links, Copy). Opens beside the editor from each tool card or **Muse CLI Chat: Open Last Tool Result in Canvas**
+
 ## [0.1.11] - 2026-08-11
 
 ### Added

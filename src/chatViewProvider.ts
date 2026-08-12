@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import type { CanvasPanel, CanvasPayload } from "./canvasPanel";
 import { probeMuseAuth } from "./museAuth";
 import {
   checkMuseInstallation,
@@ -10,6 +11,7 @@ import {
 import { loadSessionTranscript } from "./museExport";
 import type { MuseUiEvent } from "./museJsonl";
 import {
+  deleteMuseSessions,
   formatSessionPickLabel,
   listMuseSessionsForWorkspace,
 } from "./museSessions";
@@ -35,6 +37,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private readonly extensionUri: vscode.Uri,
     private readonly sessions: SessionStore,
     private readonly folders: WorkspaceFolderStore,
+    private readonly canvasPanel: CanvasPanel,
   ) {
     this.status = vscode.window.createStatusBarItem(
       vscode.StatusBarAlignment.Left,
@@ -96,8 +99,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case "openLink":
           await this.handleOpenLink(String(msg.href ?? ""));
           break;
+        case "openCanvas":
+          this.openCanvas(msg.payload as CanvasPayload | undefined);
+          break;
       }
     });
+  }
+
+  private openCanvas(payload: CanvasPayload | undefined): void {
+    if (!payload) {
+      return;
+    }
+    const hasContent = Boolean(payload.resultRaw || payload.resultView);
+    if (!hasContent) {
+      return;
+    }
+    this.canvasPanel.show(payload);
   }
 
   postConfig(): void {
@@ -173,11 +190,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     const sessions = listMuseSessionsForWorkspace(root.path, { limit: 40 });
     const current = this.sessions.getSessionId();
-    const items: (vscode.QuickPickItem & { sessionId?: string; isNew?: boolean })[] = [
+    const items: (vscode.QuickPickItem & {
+      sessionId?: string;
+      isNew?: boolean;
+      isCleanup?: boolean;
+    })[] = [
       {
         label: "$(add) New session",
         description: "Start a fresh --session-id",
         isNew: true,
+      },
+      {
+        label: "$(trash) Clean up sessions…",
+        description: "Delete old Muse sessions for this folder",
+        isCleanup: true,
       },
       ...sessions.map((s) => ({
         label: formatSessionPickLabel(s),
@@ -196,6 +222,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!picked) {
       return;
     }
+    if (picked.isCleanup) {
+      await this.cleanupSessions();
+      return;
+    }
     if (picked.isNew) {
       this.newSession();
       return;
@@ -204,6 +234,92 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     await this.resumeSession(picked.sessionId);
+  }
+
+  async cleanupSessions(): Promise<void> {
+    if (this.run) {
+      void vscode.window.showWarningMessage("Stop the current Muse run first.");
+      return;
+    }
+    const folder = await this.folders.resolveFolder();
+    if (!folder) {
+      void vscode.window.showErrorMessage(
+        "Open a folder to clean up Muse sessions.",
+      );
+      return;
+    }
+    const root = inspectWorkspaceRoot(folder.fsPath);
+    if (!root.ok) {
+      void vscode.window.showErrorMessage(root.error);
+      return;
+    }
+
+    const sessions = listMuseSessionsForWorkspace(root.path, { limit: 100 });
+    if (sessions.length === 0) {
+      void vscode.window.showInformationMessage(
+        "No Muse sessions found for this folder.",
+      );
+      return;
+    }
+
+    const current = this.sessions.getSessionId();
+    const picked = await vscode.window.showQuickPick(
+      sessions.map((s) => ({
+        label: formatSessionPickLabel(s),
+        description:
+          s.sessionId === current ? "current" : s.sessionId.slice(0, 8),
+        detail: s.firstUserPrompt ?? undefined,
+        sessionId: s.sessionId,
+      })),
+      {
+        title: "Muse CLI Chat: Clean up sessions",
+        placeHolder: "Select sessions to delete (multi-select)",
+        canPickMany: true,
+        matchOnDescription: true,
+        matchOnDetail: true,
+      },
+    );
+    if (!picked || picked.length === 0) {
+      return;
+    }
+
+    const count = picked.length;
+    const confirm = await vscode.window.showWarningMessage(
+      `Delete ${count} Muse session${count === 1 ? "" : "s"} for this folder from the local index and remove their log files? This cannot be undone.`,
+      { modal: true },
+      "Delete",
+    );
+    if (confirm !== "Delete") {
+      return;
+    }
+
+    const ids = picked.map((p) => p.sessionId);
+    const result = deleteMuseSessions({
+      workspacePath: root.path,
+      sessionIds: ids,
+    });
+
+    if (result.deletedIds.length === 0) {
+      const detail = result.errors[0] ?? "No sessions were deleted.";
+      void vscode.window.showErrorMessage(
+        `Could not clean up sessions. ${detail} If Muse’s interactive terminal is open, close it and try again.`,
+      );
+      return;
+    }
+
+    const deletedCurrent = result.deletedIds.includes(current);
+    if (deletedCurrent) {
+      this.newSession();
+    }
+
+    const msg =
+      result.errors.length > 0
+        ? `Deleted ${result.deletedIds.length} session(s); some log files could not be removed.`
+        : `Deleted ${result.deletedIds.length} Muse session(s).`;
+    void vscode.window.showInformationMessage(msg);
+    if (result.errors.length > 0) {
+      console.warn("muse.cleanupSessions", result.errors);
+    }
   }
 
   async resumeSession(sessionId: string): Promise<void> {

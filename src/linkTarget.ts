@@ -7,6 +7,17 @@ export type LinkTarget =
   | { kind: "file"; filePath: string }
   | { kind: "relative"; relativePath: string };
 
+/** True when the link should open in the system browser (not the editor). */
+export function shouldOpenInBrowser(href: string): boolean {
+  const trimmed = href.trim();
+  if (/^https?:\/\//i.test(trimmed)) {
+    return true;
+  }
+  const withoutScheme = trimmed.replace(/^file:\/\//i, "");
+  const pathOnly = withoutScheme.split(/[?#]/)[0] ?? withoutScheme;
+  return /\.html?$/i.test(pathOnly);
+}
+
 /** Classify and normalize a link from tool output (pure, testable). */
 export function classifyToolLink(
   href: string,

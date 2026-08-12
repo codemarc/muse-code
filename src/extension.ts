@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { CanvasPanel } from "./canvasPanel";
 import { ChatViewProvider } from "./chatViewProvider";
 import { maybeWarnYolo } from "./safety";
 import { SessionStore } from "./sessionStore";
@@ -7,10 +8,17 @@ import { WorkspaceFolderStore } from "./workspaceFolder";
 export function activate(context: vscode.ExtensionContext): void {
   const sessions = new SessionStore(context);
   const folders = new WorkspaceFolderStore(context);
-  const provider = new ChatViewProvider(context.extensionUri, sessions, folders);
+  const canvasPanel = new CanvasPanel(context.extensionUri, folders);
+  const provider = new ChatViewProvider(
+    context.extensionUri,
+    sessions,
+    folders,
+    canvasPanel,
+  );
 
   context.subscriptions.push(
     provider,
+    canvasPanel,
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, provider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
@@ -42,9 +50,16 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("muse.pickSession", () =>
       provider.pickSession(),
     ),
+    vscode.commands.registerCommand("muse.cleanupSessions", () =>
+      provider.cleanupSessions(),
+    ),
+    vscode.commands.registerCommand("muse.openInCanvas", () =>
+      canvasPanel.reveal(),
+    ),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("muse.toolOutputFormat")) {
         provider.postConfig();
+        canvasPanel.postConfig();
       }
       if (e.affectsConfiguration("muse")) {
         void provider.refreshSetup();

@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { classifyToolLink, resolveToolLinkPath } from "./linkTarget";
+import {
+  classifyToolLink,
+  resolveToolLinkPath,
+  shouldOpenInBrowser,
+} from "./linkTarget";
 
 describe("linkTarget", () => {
   test("rejects javascript scheme", () => {
@@ -33,5 +37,32 @@ describe("linkTarget", () => {
       "/Users/dev/project",
     );
     expect(resolved).toBe("/Users/dev/project/dist/index.html");
+  });
+});
+
+describe("shouldOpenInBrowser", () => {
+  test("true for http(s)", () => {
+    expect(shouldOpenInBrowser("https://example.com/x")).toBe(true);
+    expect(shouldOpenInBrowser("http://example.com/x")).toBe(true);
+  });
+
+  test("true for paths ending in html/htm", () => {
+    expect(shouldOpenInBrowser("/tmp/report.html")).toBe(true);
+    expect(shouldOpenInBrowser("/tmp/report.htm")).toBe(true);
+    expect(shouldOpenInBrowser("file:///tmp/report.html")).toBe(true);
+    expect(shouldOpenInBrowser("dist/index.html")).toBe(true);
+    expect(shouldOpenInBrowser("/tmp/report.HTML")).toBe(true);
+  });
+
+  test("false for non-html local files", () => {
+    expect(shouldOpenInBrowser("/tmp/notes.md")).toBe(false);
+    expect(shouldOpenInBrowser("/tmp/data.json")).toBe(false);
+    expect(shouldOpenInBrowser("src/app.ts")).toBe(false);
+  });
+
+  test("html path decision is independent of file:// prefix", () => {
+    expect(shouldOpenInBrowser("/Users/marc/blt/ism/docs/ism-close-3d.html")).toBe(
+      true,
+    );
   });
 });

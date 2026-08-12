@@ -69,6 +69,8 @@ Open this folder in VS Code/Cursor and press **F5** (Run Muse CLI Chat Extension
 | Muse CLI Chat: Check Installation | `muse --version` |
 | Muse CLI Chat: Select Workspace Folder | Pick which root to use (multi-root) |
 | Muse CLI Chat: Resume Session | Pick a retained Muse `--session-id` for this folder and reload history |
+| Muse CLI Chat: Clean Up Sessions | Multi-select delete of old Muse sessions for this folder (local index + logs) |
+| Muse CLI Chat: Open Last Tool Result in Canvas | Reveal the canvas panel with the last opened tool result |
 
 ## Settings (`muse.*`)
 
@@ -86,7 +88,9 @@ Open this folder in VS Code/Cursor and press **F5** (Run Muse CLI Chat Extension
 
 ## History
 
-The sidebar keeps Muse’s `--session-id` in workspace state. **History** / the session id chip opens a picker of retained sessions for the current folder (from Muse’s local session index). Choosing one resumes that id for later `muse exec` calls and hydrates the transcript from the session log (with `muse export` as fallback). A small local cache paints instantly while hydration runs.
+The sidebar keeps Muse’s `--session-id` in workspace state. **History** / the session id chip opens a picker of retained sessions for the current folder (from Muse’s local session index). Choosing one resumes that id for later `muse exec` calls and hydrates the transcript from the session log (with `muse export` as fallback). A small local cache paints instantly while hydration runs. **Clean up sessions** (also in that picker) permanently deletes selected sessions for this folder from Muse’s local index and removes their log directories under `~/.local/share/muse/sessions` (close interactive Muse if the delete fails due to a DB lock).
+
+**Open in canvas** on a tool card shows the full tool output beside the editor (no sidebar height cap), with the same Readable / Raw toggle and clickable links. When the output looks like Markdown or HTML, **Preview** renders it in a sandboxed iframe (no scripts; external images stripped). Clicking a `.html` / `.htm` path opens it in your default browser (`file://` via the OS); other local paths reveal in Finder. **Open externally** uses the same rules when a doc path is detected.
 
 ## Safety
 

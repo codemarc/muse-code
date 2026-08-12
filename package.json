@@ -2,7 +2,7 @@
   "name": "muse-cli-chat",
   "displayName": "Muse CLI Chat",
   "description": "Unofficial VS Code / Cursor sidebar for Meta Muse Code. Wraps the muse CLI (muse exec --json); not affiliated with Meta.",
-  "version": "0.1.11",
+  "version": "0.1.14",
   "publisher": "codemarc",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -113,6 +113,16 @@
         "command": "muse.pickSession",
         "title": "Muse CLI Chat: Resume Session",
         "icon": "$(history)"
+      },
+      {
+        "command": "muse.cleanupSessions",
+        "title": "Muse CLI Chat: Clean Up Sessions",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "muse.openInCanvas",
+        "title": "Muse CLI Chat: Open Last Tool Result in Canvas",
+        "icon": "$(open-preview)"
       }
     ],
     "menus": {
@@ -126,6 +136,16 @@
           "command": "muse.pickSession",
           "when": "view == muse.chatView",
           "group": "navigation@1"
+        },
+        {
+          "command": "muse.cleanupSessions",
+          "when": "view == muse.chatView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "muse.openInCanvas",
+          "when": "view == muse.chatView",
+          "group": "navigation@3"
         },
         {
           "command": "muse.newSession",

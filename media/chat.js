@@ -140,8 +140,27 @@
     expandBtn.className = "tool-toggle";
     expandBtn.hidden = true;
 
+    const openCanvasBtn = document.createElement("button");
+    openCanvasBtn.type = "button";
+    openCanvasBtn.className = "tool-toggle";
+    openCanvasBtn.textContent = "Open in canvas";
+    const hasContent = !!(data.resultRaw || data.resultView);
+    openCanvasBtn.hidden = !hasContent;
+    openCanvasBtn.addEventListener("click", function () {
+      vscode.postMessage({
+        type: "openCanvas",
+        payload: {
+          name: data.name,
+          resultRaw: data.resultRaw,
+          resultView: data.resultView,
+          execMeta: data.execMeta,
+        },
+      });
+    });
+
     actions.appendChild(readableBtn);
     actions.appendChild(rawBtn);
+    actions.appendChild(openCanvasBtn);
     header.appendChild(actions);
     el.appendChild(header);
 
