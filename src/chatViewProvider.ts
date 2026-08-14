@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import type { CanvasPanel, CanvasPayload } from "./canvasPanel";
+import { readCanvasFile } from "./canvasFile";
 import { probeMuseAuth } from "./museAuth";
 import {
   checkMuseInstallation,
@@ -15,8 +16,14 @@ import {
   formatSessionPickLabel,
   listMuseSessionsForWorkspace,
 } from "./museSessions";
+import { resolveToolLinkPath } from "./linkTarget";
 import { openToolLink } from "./openLink";
 import { isSupportedPlatform, unsupportedPlatformMessage } from "./platform";
+import {
+  buildChatMarkdownHtml,
+  buildPreviewFromSource,
+  kindFromPath,
+} from "./previewContent";
 import { ensureHeadlessConsent } from "./safety";
 import type { SessionStore } from "./sessionStore";
 import { formatToolResult } from "./toolResultFormat";
@@ -102,6 +109,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case "openCanvas":
           this.openCanvas(msg.payload as CanvasPayload | undefined);
           break;
+        case "openCanvasFile":
+          await this.openCanvasFile(String(msg.href ?? ""));
+          break;
       }
     });
   }
@@ -117,11 +127,67 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.canvasPanel.show(payload);
   }
 
+  private async openCanvasFile(href: string): Promise<void> {
+    const folder = this.folders.getFolder();
+    if (!folder) {
+      void vscode.window.showWarningMessage(
+        "Open a folder to preview files in the canvas.",
+      );
+      return;
+    }
+    const resolved = resolveToolLinkPath(href, folder.fsPath);
+    if (!resolved) {
+      void vscode.window.showWarningMessage(`Could not resolve path: ${href}`);
+      return;
+    }
+
+    const kind = kindFromPath(resolved);
+    if (kind === "none" && /\.xlsx?$/i.test(resolved)) {
+      const ok = await openToolLink(resolved, folder.uri);
+      if (!ok) {
+        void vscode.window.showWarningMessage(
+          `Could not open spreadsheet: ${resolved}`,
+        );
+      }
+      return;
+    }
+
+    const read = readCanvasFile(resolved, folder.fsPath);
+    if (!read.ok) {
+      // Still offer external open when it's a real path we can't preview.
+      if (read.filePath && /larger|Excel/i.test(read.error)) {
+        const choice = await vscode.window.showWarningMessage(
+          read.error,
+          "Open externally",
+        );
+        if (choice === "Open externally") {
+          await openToolLink(read.filePath, folder.uri);
+        }
+        return;
+      }
+      void vscode.window.showWarningMessage(read.error);
+      return;
+    }
+
+    const built = buildPreviewFromSource(read.source, read.kind);
+    this.canvasPanel.showFile({
+      path: read.filePath,
+      title: read.filePath.split(/[/\\]/).pop() || read.filePath,
+      kind: read.kind,
+      source: read.source,
+      previewHtml: built.previewHtml,
+    });
+  }
+
   postConfig(): void {
     const cfg = vscode.workspace.getConfiguration("muse");
     this.post({
       type: "config",
-      toolOutputFormat: cfg.get<"readable" | "json">("toolOutputFormat", "readable"),
+      toolOutputFormat: cfg.get<"readable" | "json">(
+        "toolOutputFormat",
+        "readable",
+      ),
+      chatFormat: cfg.get<"markdown" | "plain">("chatFormat", "markdown"),
     });
   }
 
@@ -680,6 +746,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.post({
           type: "assistant_final",
           text: event.text,
+          html: this.assistantHtml(event.text),
           terminal: event.terminal,
           reason: event.reason ?? null,
         });
@@ -732,6 +799,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private enrichItemForWebview(item: TranscriptItem): unknown {
+    if (item.type === "assistant") {
+      return {
+        type: "assistant",
+        text: item.text,
+        html: this.assistantHtml(item.text),
+      };
+    }
     if (item.type !== "tool") {
       return item;
     }
@@ -744,6 +818,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       resultView: formatted.resultView,
       execMeta: formatted.execMeta,
     };
+  }
+
+  private chatFormat(): "markdown" | "plain" {
+    return vscode.workspace
+      .getConfiguration("muse")
+      .get<"markdown" | "plain">("chatFormat", "markdown");
+  }
+
+  private assistantHtml(text: string): string | null {
+    if (this.chatFormat() !== "markdown" || !text.trim()) {
+      return null;
+    }
+    return buildChatMarkdownHtml(text);
   }
 
   private async handleOpenLink(href: string): Promise<void> {

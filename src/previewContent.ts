@@ -1,8 +1,17 @@
-/** Sniff, sanitize, and build canvas Preview HTML from tool output. */
+/** Sniff, sanitize, and build canvas Preview HTML from tool output or files. */
 
+import { basename } from "node:path";
 import { isExecEnvelope } from "./toolResultFormat";
 
-export type PreviewKind = "markdown" | "html" | "none";
+export type PreviewKind =
+  | "markdown"
+  | "html"
+  | "json"
+  | "yaml"
+  | "toon"
+  | "csv"
+  | "text"
+  | "none";
 
 export interface PreviewPayloadInput {
   resultRaw?: string;
@@ -20,6 +29,69 @@ export interface BuiltPreview {
 
 const BLOCKED_SCHEME = /^(javascript|data|vbscript):/i;
 
+/** Extensions that can open as a canvas file chip. */
+export const CANVAS_FILE_EXT_RE =
+  /\.(?:md|html?|htm|json|ya?ml|toon|csv|tsv|txt|xlsx?)$/i;
+
+const DOC_PATH_RE =
+  /(?:https?:\/\/[^\s<>"']+\.(?:md|html?|htm|json|ya?ml|toon|csv|tsv|txt|xlsx?)|\/[\w./~-]+\.(?:md|html?|htm|json|ya?ml|toon|csv|tsv|txt|xlsx?)|file:\/\/[^\s<>"']+\.(?:md|html?|htm|json|ya?ml|toon|csv|tsv|txt|xlsx?))/gi;
+
+export function kindFromPath(filePath: string): PreviewKind {
+  const base = basename(filePath).toLowerCase();
+  const ext = base.includes(".") ? base.slice(base.lastIndexOf(".")) : "";
+  switch (ext) {
+    case ".md":
+      return "markdown";
+    case ".html":
+    case ".htm":
+      return "html";
+    case ".json":
+      return "json";
+    case ".yml":
+    case ".yaml":
+      return "yaml";
+    case ".toon":
+      return "toon";
+    case ".csv":
+    case ".tsv":
+      return "csv";
+    case ".txt":
+      return "text";
+    case ".xls":
+    case ".xlsx":
+      return "none";
+    default:
+      return "none";
+  }
+}
+
+export function chipLabelForKind(kind: PreviewKind, filePath?: string): string {
+  const ext = filePath
+    ? basename(filePath).split(".").pop()?.toUpperCase() ?? ""
+    : "";
+  switch (kind) {
+    case "markdown":
+      return "Document · MD";
+    case "html":
+      return "Document · HTML";
+    case "json":
+      return "Document · JSON";
+    case "yaml":
+      return "Document · YAML";
+    case "toon":
+      return "Document · TOON";
+    case "csv":
+      return ext === "TSV" ? "Document · TSV" : "Document · CSV";
+    case "text":
+      return "Document · TXT";
+    case "none":
+      if (/\.xlsx?$/i.test(filePath ?? "")) {
+        return "Spreadsheet · XLSX";
+      }
+      return ext ? `Document · ${ext}` : "Document";
+  }
+}
+
 export function sniffPreviewKind(
   text: string,
   hints?: { pathHint?: string },
@@ -29,16 +101,20 @@ export function sniffPreviewKind(
     return "none";
   }
 
-  const pathHint = hints?.pathHint?.toLowerCase() ?? "";
-  if (/\.(html?|htm)$/i.test(pathHint)) {
-    return "html";
-  }
-  if (/\.md$/i.test(pathHint)) {
-    return "markdown";
+  const pathHint = hints?.pathHint ?? "";
+  if (pathHint) {
+    const fromPath = kindFromPath(pathHint);
+    if (fromPath !== "none") {
+      return fromPath;
+    }
   }
 
   if (looksLikeHtml(trimmed)) {
     return "html";
+  }
+
+  if (looksLikeJson(trimmed)) {
+    return "json";
   }
 
   if (looksLikeMarkdown(trimmed)) {
@@ -72,18 +148,60 @@ export function buildPreviewFromPayload(
   return { kind, body, previewHtml, openExternallyHref };
 }
 
+export function buildPreviewFromSource(
+  source: string,
+  kind: PreviewKind,
+): BuiltPreview {
+  if (kind === "none") {
+    return {
+      kind: "none",
+      body: source,
+      previewHtml: null,
+      openExternallyHref: null,
+    };
+  }
+  return {
+    kind,
+    body: source,
+    previewHtml: buildPreviewHtml(source, kind),
+    openExternallyHref: null,
+  };
+}
+
 export function buildPreviewHtml(
   body: string,
   kind: Exclude<PreviewKind, "none">,
 ): string {
-  const inner =
-    kind === "markdown" ? markdownToHtml(body) : sanitizeHtmlFragment(body);
+  let inner: string;
+  switch (kind) {
+    case "markdown":
+      inner = markdownToHtml(body);
+      break;
+    case "html":
+      inner = sanitizeHtmlFragment(body);
+      break;
+    case "json":
+      inner = `<pre><code>${escapeHtml(prettyJson(body))}</code></pre>`;
+      break;
+    case "csv":
+      inner = csvToHtmlTable(body);
+      break;
+    case "yaml":
+    case "toon":
+    case "text":
+      inner = `<pre><code>${escapeHtml(body)}</code></pre>`;
+      break;
+  }
   return wrapPreviewDocument(inner);
+}
+
+/** Host-sanitized Markdown HTML for sidebar assistant messages (fragment only). */
+export function buildChatMarkdownHtml(md: string): string {
+  return sanitizeHtmlFragment(markdownToHtml(md));
 }
 
 export function sanitizeHtmlFragment(html: string): string {
   let out = html;
-  // Remove forbidden elements including their contents where relevant.
   out = out.replace(
     /<(script|style|iframe|object|embed|noscript)\b[^>]*>[\s\S]*?<\/\1>/gi,
     "",
@@ -92,9 +210,7 @@ export function sanitizeHtmlFragment(html: string): string {
     /<\/?(?:script|style|iframe|object|embed|base|link|meta|form|input|button|textarea|select|svg|math|noscript)(?:\s[^>]*)?\/?>/gi,
     "",
   );
-  // Strip event-handler attributes.
   out = out.replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "");
-  // Neutralize blocked schemes in href/src/xlink:href/action/formaction.
   out = out.replace(
     /\s(href|src|xlink:href|action|formaction)\s*=\s*(["'])([^"']*)\2/gi,
     (_m, attr: string, quote: string, value: string) => {
@@ -102,11 +218,9 @@ export function sanitizeHtmlFragment(html: string): string {
       if (BLOCKED_SCHEME.test(v)) {
         return ` ${attr}=${quote}#${quote}`;
       }
-      // v1: strip external / non-data images via src on img handled below.
       return ` ${attr}=${quote}${value}${quote}`;
     },
   );
-  // Remove img tags with non-data src (external images stripped in v1).
   out = out.replace(/<img\b[^>]*>/gi, (tag) => {
     const srcMatch = /\bsrc\s*=\s*(["'])([^"']*)\1/i.exec(tag);
     if (!srcMatch) {
@@ -114,7 +228,6 @@ export function sanitizeHtmlFragment(html: string): string {
     }
     const src = srcMatch[2].trim();
     if (/^data:image\//i.test(src)) {
-      // Still strip on* already; keep data images only.
       return tag.replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "");
     }
     const altMatch = /\balt\s*=\s*(["'])([^"']*)\1/i.exec(tag);
@@ -153,7 +266,6 @@ export function markdownToHtml(md: string): string {
   while (i < lines.length) {
     const line = lines[i];
 
-    // Fenced code
     const fence = /^```([\w-]*)\s*$/.exec(line);
     if (fence) {
       closeLists();
@@ -165,7 +277,7 @@ export function markdownToHtml(md: string): string {
         code.push(lines[i]);
         i += 1;
       }
-      i += 1; // closing fence
+      i += 1;
       const cls = lang ? ` class="language-${escapeHtml(lang)}"` : "";
       html.push(
         `<pre><code${cls}>${escapeHtml(code.join("\n"))}</code></pre>`,
@@ -173,7 +285,6 @@ export function markdownToHtml(md: string): string {
       continue;
     }
 
-    // Headings
     const heading = /^(#{1,6})\s+(.+)$/.exec(line);
     if (heading) {
       closeLists();
@@ -184,7 +295,6 @@ export function markdownToHtml(md: string): string {
       continue;
     }
 
-    // Blockquote
     if (/^>\s?/.test(line)) {
       closeLists();
       if (!inBq) {
@@ -197,7 +307,6 @@ export function markdownToHtml(md: string): string {
     }
     closeBq();
 
-    // Unordered list
     if (/^[-*+]\s+/.test(line)) {
       if (inOl) {
         html.push("</ol>");
@@ -212,7 +321,6 @@ export function markdownToHtml(md: string): string {
       continue;
     }
 
-    // Ordered list
     if (/^\d+\.\s+/.test(line)) {
       if (inUl) {
         html.push("</ul>");
@@ -234,7 +342,6 @@ export function markdownToHtml(md: string): string {
       continue;
     }
 
-    // Paragraph: gather consecutive non-empty non-special lines
     const para: string[] = [line];
     i += 1;
     while (
@@ -257,15 +364,110 @@ export function markdownToHtml(md: string): string {
   return html.join("\n");
 }
 
+export function csvToHtmlTable(text: string): string {
+  const delim = text.includes("\t") && !text.includes(",") ? "\t" : ",";
+  const rows = parseDelimited(text, delim);
+  if (rows.length === 0) {
+    return `<pre><code>${escapeHtml(text)}</code></pre>`;
+  }
+  const maxRows = Math.min(rows.length, 201);
+  const maxCols = 40;
+  const header = rows[0].slice(0, maxCols);
+  const bodyRows = rows.slice(1, maxRows);
+
+  const thead =
+    "<thead><tr>" +
+    header.map((c) => `<th>${escapeHtml(c)}</th>`).join("") +
+    "</tr></thead>";
+  const tbody =
+    "<tbody>" +
+    bodyRows
+      .map(
+        (r) =>
+          "<tr>" +
+          header
+            .map((_, i) => `<td>${escapeHtml(r[i] ?? "")}</td>`)
+            .join("") +
+          "</tr>",
+      )
+      .join("") +
+    "</tbody>";
+  const note =
+    rows.length > maxRows
+      ? `<p class="muted">Showing ${maxRows - 1} of ${rows.length - 1} data rows.</p>`
+      : "";
+  return `${note}<table class="csv-table">${thead}${tbody}</table>`;
+}
+
 export function findPrimaryDocPath(text: string): string | null {
-  const matches = text.match(
-    /(?:https?:\/\/[^\s<>"']+\.(?:html?|htm|md)|\/[\w./~-]+\.(?:html?|htm|md)|file:\/\/[^\s<>"']+\.(?:html?|htm|md))/gi,
-  );
+  const matches = text.match(DOC_PATH_RE);
   if (!matches || matches.length === 0) {
     return null;
   }
-  // Prefer a single clear path; if many, use the first.
   return matches[0];
+}
+
+export function collectDocPaths(text: string): string[] {
+  const matches = text.match(DOC_PATH_RE) ?? [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const m of matches) {
+    if (seen.has(m)) {
+      continue;
+    }
+    seen.add(m);
+    out.push(m);
+  }
+  return out;
+}
+
+function prettyJson(body: string): string {
+  try {
+    return JSON.stringify(JSON.parse(body), null, 2);
+  } catch {
+    return body;
+  }
+}
+
+function parseDelimited(text: string, delim: string): string[][] {
+  const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  const rows: string[][] = [];
+  for (const line of lines) {
+    if (line === "" && rows.length === 0) {
+      continue;
+    }
+    if (line === "" && rows.length > 0) {
+      continue;
+    }
+    rows.push(splitDelimitedLine(line, delim));
+  }
+  return rows;
+}
+
+function splitDelimitedLine(line: string, delim: string): string[] {
+  const cells: string[] = [];
+  let cur = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        cur += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+    if (ch === delim && !inQuotes) {
+      cells.push(cur);
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  cells.push(cur);
+  return cells;
 }
 
 function looksLikeHtml(trimmed: string): boolean {
@@ -277,14 +479,28 @@ function looksLikeHtml(trimmed: string): boolean {
   }
   const firstLine =
     trimmed.split(/\r?\n/).find((l) => l.trim().length > 0)?.trim() ?? "";
-  if (/^<[a-z][\w:-]*(\s|>|\/)/i.test(firstLine) && /<\/[a-z][\w:-]*>/i.test(trimmed)) {
+  if (
+    /^<[a-z][\w:-]*(\s|>|\/)/i.test(firstLine) &&
+    /<\/[a-z][\w:-]*>/i.test(trimmed)
+  ) {
     return true;
   }
   return false;
 }
 
+function looksLikeJson(trimmed: string): boolean {
+  if (!(trimmed.startsWith("{") || trimmed.startsWith("["))) {
+    return false;
+  }
+  try {
+    JSON.parse(trimmed);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function looksLikeMarkdown(trimmed: string): boolean {
-  // Require 2+ signals. A lone `# shell comment` must not qualify.
   let signals = 0;
   if (/^#{1,6}\s+\S.+$/m.test(trimmed)) {
     signals += 1;
@@ -312,7 +528,6 @@ function looksLikeMarkdown(trimmed: string): boolean {
 
 function inlineMd(text: string): string {
   let s = escapeHtml(text);
-  // Links [text](url)
   s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label: string, url: string) => {
     const href = url.trim();
     if (BLOCKED_SCHEME.test(href)) {
@@ -320,13 +535,10 @@ function inlineMd(text: string): string {
     }
     return `<a href="${escapeAttr(href)}">${label}</a>`;
   });
-  // Bold **text** or __text__
   s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/__(.+?)__/g, "<strong>$1</strong>");
-  // Italic *text* or _text_
   s = s.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, "<em>$1</em>");
   s = s.replace(/(?<!_)_(?!_)(.+?)(?<!_)_(?!_)/g, "<em>$1</em>");
-  // Inline code
   s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
   return s;
 }
@@ -353,6 +565,8 @@ function wrapPreviewDocument(bodyInner: string): string {
     body { color: #e8e8e8; background: #1e1e1e; }
     a { color: #6cb6ff; }
     code, pre { background: #2a2a2a; }
+    th, td { border-color: #444; }
+    th { background: #2a2a2a; }
   }
   h1, h2, h3, h4, h5, h6 { line-height: 1.25; margin: 1.2em 0 0.5em; }
   p, ul, ol, blockquote { margin: 0.6em 0; }
@@ -378,6 +592,20 @@ function wrapPreviewDocument(bodyInner: string): string {
     opacity: 0.95;
   }
   img { max-width: 100%; }
+  table.csv-table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 12px;
+    margin: 8px 0;
+  }
+  th, td {
+    border: 1px solid #ccc;
+    padding: 4px 8px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f2f2f2; font-weight: 600; }
+  .muted { opacity: 0.7; font-size: 12px; }
 </style>
 </head>
 <body>

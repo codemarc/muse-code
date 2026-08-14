@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.15] - 2026-08-13
+
+### Added
+
+- **File canvas**: click file chips (md/html/json/yaml/toon/csv/txt) in chat or tool output to open a Preview/Source canvas by reading the workspace file (512 KB cap, workspace jail)
+- CSV/TSV table preview in canvas; `.xls`/`.xlsx` chips open externally only
+- `muse.chatFormat` setting (`markdown` default, or `plain`) for sanitized assistant Markdown in the sidebar
+- Expanded stdout Preview kinds: json, yaml, toon, csv, text (in addition to markdown/html)
+
 ## [0.1.14] - 2026-08-11
 
 ### Added

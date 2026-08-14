@@ -1,8 +1,11 @@
+import { basename } from "node:path";
 import * as vscode from "vscode";
 import { openToolLink } from "./openLink";
 import {
   buildPreviewFromPayload,
+  buildPreviewFromSource,
   type BuiltPreview,
+  type PreviewKind,
 } from "./previewContent";
 import type { ExecMeta } from "./toolResultFormat";
 import type { WorkspaceFolderStore } from "./workspaceFolder";
@@ -14,11 +17,23 @@ export interface CanvasPayload {
   execMeta?: ExecMeta;
 }
 
+export interface CanvasFilePayload {
+  path: string;
+  title: string;
+  kind: PreviewKind;
+  source: string;
+  previewHtml: string | null;
+}
+
+type CanvasMode = "stdout" | "file";
+
 export class CanvasPanel implements vscode.Disposable {
   public static readonly viewType = "muse.canvasPanel";
 
   private panel?: vscode.WebviewPanel;
   private currentData?: CanvasPayload;
+  private currentFile?: CanvasFilePayload;
+  private canvasMode: CanvasMode = "stdout";
   private currentPreview?: BuiltPreview;
   private toolOutputFormat: "readable" | "json" = "readable";
   private readonly disposables: vscode.Disposable[] = [];
@@ -35,14 +50,94 @@ export class CanvasPanel implements vscode.Disposable {
   }
 
   show(data: CanvasPayload): void {
+    this.canvasMode = "stdout";
+    this.currentFile = undefined;
     this.currentData = data;
     this.currentPreview = buildPreviewFromPayload(data);
     const title = panelTitle(data);
+    this.ensurePanel(title);
+    this.postCanvasData();
+  }
 
+  showFile(file: CanvasFilePayload): void {
+    this.canvasMode = "file";
+    this.currentData = undefined;
+    this.currentFile = file;
+    this.currentPreview = {
+      kind: file.kind,
+      body: file.source,
+      previewHtml: file.previewHtml,
+      openExternallyHref: file.path,
+    };
+    this.ensurePanel(file.title || basename(file.path));
+    this.postCanvasData();
+  }
+
+  /** Convenience: build preview from source + open file mode. */
+  showFileSource(opts: {
+    path: string;
+    source: string;
+    kind: PreviewKind;
+  }): void {
+    const built = buildPreviewFromSource(opts.source, opts.kind);
+    this.showFile({
+      path: opts.path,
+      title: basename(opts.path),
+      kind: opts.kind,
+      source: opts.source,
+      previewHtml: built.previewHtml,
+    });
+  }
+
+  reveal(): void {
+    if (this.panel) {
+      this.panel.reveal(vscode.ViewColumn.Beside, true);
+      return;
+    }
+    if (this.currentFile) {
+      this.showFile(this.currentFile);
+      return;
+    }
+    if (this.currentData) {
+      this.show(this.currentData);
+      return;
+    }
+    void vscode.window.showInformationMessage(
+      "No tool result or file to show. Open one from Muse chat.",
+    );
+  }
+
+  postConfig(format?: "readable" | "json"): void {
+    if (format === "readable" || format === "json") {
+      this.toolOutputFormat = format;
+    } else {
+      const cfg = vscode.workspace.getConfiguration("muse");
+      this.toolOutputFormat = cfg.get<"readable" | "json">(
+        "toolOutputFormat",
+        "readable",
+      );
+    }
+    if (!this.panel) {
+      return;
+    }
+    void this.panel.webview.postMessage({
+      type: "config",
+      toolOutputFormat: this.toolOutputFormat,
+    });
+  }
+
+  dispose(): void {
+    this.panel?.dispose();
+    this.panel = undefined;
+    while (this.disposables.length) {
+      this.disposables.pop()?.dispose();
+    }
+  }
+
+  private ensurePanel(title: string): void {
     if (this.panel) {
       this.panel.title = title;
       this.panel.reveal(vscode.ViewColumn.Beside, true);
-      this.postCanvasData();
       return;
     }
 
@@ -80,7 +175,7 @@ export class CanvasPanel implements vscode.Disposable {
           }
           case "copyFailed":
             void vscode.window.showWarningMessage(
-              "Could not copy tool output to the clipboard.",
+              "Could not copy to the clipboard.",
             );
             break;
           case "previewFailed":
@@ -103,49 +198,35 @@ export class CanvasPanel implements vscode.Disposable {
     );
   }
 
-  reveal(): void {
-    if (this.panel) {
-      this.panel.reveal(vscode.ViewColumn.Beside, true);
-      return;
-    }
-    if (this.currentData) {
-      this.show(this.currentData);
-      return;
-    }
-    void vscode.window.showInformationMessage(
-      "No tool result to show. Open one from a tool card in Muse chat.",
-    );
-  }
-
-  postConfig(format?: "readable" | "json"): void {
-    if (format === "readable" || format === "json") {
-      this.toolOutputFormat = format;
-    } else {
-      const cfg = vscode.workspace.getConfiguration("muse");
-      this.toolOutputFormat = cfg.get<"readable" | "json">(
-        "toolOutputFormat",
-        "readable",
-      );
-    }
+  private postCanvasData(): void {
     if (!this.panel) {
       return;
     }
-    void this.panel.webview.postMessage({
-      type: "config",
-      toolOutputFormat: this.toolOutputFormat,
-    });
-  }
 
-  dispose(): void {
-    this.panel?.dispose();
-    this.panel = undefined;
-    while (this.disposables.length) {
-      this.disposables.pop()?.dispose();
+    if (this.canvasMode === "file" && this.currentFile) {
+      const file = this.currentFile;
+      const preview =
+        this.currentPreview ??
+        buildPreviewFromSource(file.source, file.kind);
+      this.currentPreview = preview;
+      void this.panel.webview.postMessage({
+        type: "canvasData",
+        source: "file",
+        name: file.title,
+        resultRaw: file.source,
+        resultView: null,
+        execMeta: null,
+        toolOutputFormat: this.toolOutputFormat,
+        previewKind: preview.kind,
+        previewHtml: preview.previewHtml,
+        previewBody: preview.body,
+        openExternallyHref: file.path,
+        filePath: file.path,
+      });
+      return;
     }
-  }
 
-  private postCanvasData(): void {
-    if (!this.panel || !this.currentData) {
+    if (!this.currentData) {
       return;
     }
     const preview =
@@ -153,6 +234,7 @@ export class CanvasPanel implements vscode.Disposable {
     this.currentPreview = preview;
     void this.panel.webview.postMessage({
       type: "canvasData",
+      source: "stdout",
       name: this.currentData.name,
       resultRaw: this.currentData.resultRaw ?? "",
       resultView: this.currentData.resultView ?? null,
@@ -174,10 +256,11 @@ export class CanvasPanel implements vscode.Disposable {
   }
 
   private async handleOpenExternally(): Promise<void> {
-    const href = this.currentPreview?.openExternallyHref;
+    const href =
+      this.currentPreview?.openExternallyHref ?? this.currentFile?.path;
     if (!href) {
       void vscode.window.showInformationMessage(
-        "No HTML/Markdown path found in this tool result to open externally.",
+        "No file path found to open externally.",
       );
       return;
     }
@@ -211,6 +294,7 @@ export class CanvasPanel implements vscode.Disposable {
       <div class="tool-actions">
         <button type="button" id="readable" class="tool-toggle">Readable</button>
         <button type="button" id="raw" class="tool-toggle">Raw</button>
+        <button type="button" id="source" class="tool-toggle" hidden>Source</button>
         <button type="button" id="preview" class="tool-toggle" hidden>Preview</button>
         <button type="button" id="open-ext" class="tool-toggle" hidden>Open externally</button>
         <button type="button" id="copy" class="tool-toggle">Copy</button>

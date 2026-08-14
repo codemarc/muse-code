@@ -85,12 +85,13 @@ Open this folder in VS Code/Cursor and press **F5** (Run Muse CLI Chat Extension
 | `useEchoProvider` | `false` | Offline UI smoke tests |
 | `extraArgs` | `[]` | Extra argv; `--yolo` / `--disable-sandbox` blocked (application-scoped) |
 | `toolOutputFormat` | `readable` | Default tool result view: `readable` (terminal-style for exec) or `json` (raw payload). Each card can toggle. |
+| `chatFormat` | `markdown` | Assistant messages in the sidebar: `markdown` (sanitized) or `plain` text. |
 
 ## History
 
 The sidebar keeps Muse’s `--session-id` in workspace state. **History** / the session id chip opens a picker of retained sessions for the current folder (from Muse’s local session index). Choosing one resumes that id for later `muse exec` calls and hydrates the transcript from the session log (with `muse export` as fallback). A small local cache paints instantly while hydration runs. **Clean up sessions** (also in that picker) permanently deletes selected sessions for this folder from Muse’s local index and removes their log directories under `~/.local/share/muse/sessions` (close interactive Muse if the delete fails due to a DB lock).
 
-**Open in canvas** on a tool card shows the full tool output beside the editor (no sidebar height cap), with the same Readable / Raw toggle and clickable links. When the output looks like Markdown or HTML, **Preview** renders it in a sandboxed iframe (no scripts; external images stripped). Clicking a `.html` / `.htm` path opens it in your default browser (`file://` via the OS); other local paths reveal in Finder. **Open externally** uses the same rules when a doc path is detected.
+**Open in canvas** on a tool card shows the full tool output beside the editor (no sidebar height cap), with Readable / Raw and Preview when the stdout looks like a document. Paths to `.md`, `.html`, `.json`, `.yml`/`.yaml`, `.toon`, `.csv`/`.tsv`, and `.txt` appear as file chips; clicking a chip reads the workspace file into the canvas (Preview / Source). Excel files open externally only. Clicking a `.html` path via Open externally still uses the system browser.
 
 ## Safety
 

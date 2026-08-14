@@ -57,7 +57,10 @@ export function activate(context: vscode.ExtensionContext): void {
       canvasPanel.reveal(),
     ),
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("muse.toolOutputFormat")) {
+      if (
+        e.affectsConfiguration("muse.toolOutputFormat") ||
+        e.affectsConfiguration("muse.chatFormat")
+      ) {
         provider.postConfig();
         canvasPanel.postConfig();
       }

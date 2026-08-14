@@ -2,7 +2,7 @@
   "name": "muse-cli-chat",
   "displayName": "Muse CLI Chat",
   "description": "Unofficial VS Code / Cursor sidebar for Meta Muse Code. Wraps the muse CLI (muse exec --json); not affiliated with Meta.",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "publisher": "codemarc",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -248,6 +248,15 @@
           ],
           "default": "readable",
           "description": "Default view for tool results in the chat sidebar. Readable shows terminal-style output for shell/exec results; JSON shows the raw payload. Each tool card can still toggle views."
+        },
+        "muse.chatFormat": {
+          "type": "string",
+          "enum": [
+            "markdown",
+            "plain"
+          ],
+          "default": "markdown",
+          "description": "How assistant messages render in the sidebar. Markdown shows headings, lists, and code blocks (sanitized). Plain keeps raw text."
         }
       }
     }

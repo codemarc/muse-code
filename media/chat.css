@@ -161,6 +161,101 @@ body {
   border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
 }
 
+.msg.assistant .md-body {
+  white-space: normal;
+}
+
+.msg.assistant .md-body h1,
+.msg.assistant .md-body h2,
+.msg.assistant .md-body h3,
+.msg.assistant .md-body h4 {
+  margin: 0.6em 0 0.35em;
+  line-height: 1.25;
+  font-size: 1.05em;
+}
+
+.msg.assistant .md-body h1 {
+  font-size: 1.15em;
+}
+
+.msg.assistant .md-body p,
+.msg.assistant .md-body ul,
+.msg.assistant .md-body ol {
+  margin: 0.4em 0;
+}
+
+.msg.assistant .md-body pre {
+  margin: 0.5em 0;
+  padding: 8px;
+  overflow: auto;
+  font-size: 11px;
+  background: var(--vscode-sideBar-background, rgba(128, 128, 128, 0.12));
+  border-radius: 4px;
+}
+
+.msg.assistant .md-body code {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.92em;
+}
+
+.msg.assistant .md-body table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 11px;
+  margin: 0.5em 0;
+  display: block;
+  overflow-x: auto;
+}
+
+.msg.assistant .md-body th,
+.msg.assistant .md-body td {
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  padding: 3px 6px;
+  text-align: left;
+}
+
+.file-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.file-chip {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  max-width: 100%;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.45));
+  background: var(--vscode-editor-background);
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.file-chip:hover {
+  border-color: var(--vscode-focusBorder);
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.12));
+}
+
+.file-chip-name {
+  font-size: 12px;
+  font-weight: 600;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-chip-meta {
+  font-size: 10px;
+  opacity: 0.7;
+}
+
 .msg.tool,
 .msg.task,
 .msg.status,

@@ -6,18 +6,20 @@
   const previewFrame = document.getElementById("preview-frame");
   const readableBtn = document.getElementById("readable");
   const rawBtn = document.getElementById("raw");
+  const sourceBtn = document.getElementById("source");
   const previewBtn = document.getElementById("preview");
   const openExtBtn = document.getElementById("open-ext");
   const copyBtn = document.getElementById("copy");
 
   // keep in sync with chat.js:LINK_RE
   const LINK_RE =
-    /(?:https?:\/\/[^\s<>"']+|file:\/\/[^\s<>"']+|(?:\/[\w./~-]+\.(?:html?|htm|pdf|md|svg|png|jpe?g|gif|webp)))/gi;
+    /(?:https?:\/\/[^\s<>"']+|file:\/\/[^\s<>"']+|(?:\/[\w./~-]+\.(?:html?|htm|pdf|md|json|ya?ml|toon|csv|tsv|txt|xlsx?|svg|png|jpe?g|gif|webp)))/gi;
 
   let toolOutputFormat = "readable";
   let userOverride = false;
   let mode = "readable";
   let data = {
+    source: "stdout",
     name: "",
     resultRaw: "",
     resultView: null,
@@ -26,7 +28,12 @@
     previewBody: "",
     previewKind: "none",
     openExternallyHref: null,
+    filePath: null,
   };
+
+  function isFileMode() {
+    return data.source === "file";
+  }
 
   function linkifyInto(el, text) {
     el.textContent = "";
@@ -61,6 +68,9 @@
     if (mode === "preview") {
       return data.previewBody || data.resultRaw || "";
     }
+    if (isFileMode() || mode === "source" || mode === "json") {
+      return data.resultRaw || data.previewBody || "";
+    }
     if (mode === "readable" && data.resultView) {
       return data.resultView;
     }
@@ -72,16 +82,27 @@
   }
 
   function syncToggleState() {
-    const hasReadable = !!data.resultView;
+    const file = isFileMode();
+    const hasReadable = !!data.resultView && !file;
     readableBtn.hidden = !hasReadable;
+    rawBtn.hidden = file;
+    sourceBtn.hidden = !file;
     previewBtn.hidden = !hasPreview();
     openExtBtn.hidden = !data.openExternallyHref;
     readableBtn.classList.toggle("active", mode === "readable");
     rawBtn.classList.toggle("active", mode === "json");
+    sourceBtn.classList.toggle("active", mode === "source" || (file && mode === "json"));
     previewBtn.classList.toggle("active", mode === "preview");
   }
 
   function renderHeader() {
+    if (isFileMode()) {
+      labelEl.textContent = data.name || data.filePath || "File";
+      exitEl.hidden = true;
+      exitEl.textContent = "";
+      exitEl.className = "tool-exit";
+      return;
+    }
     const meta = data.execMeta || {};
     labelEl.textContent =
       meta.description ||
@@ -111,7 +132,7 @@
         bodyEl.hidden = false;
         previewFrame.hidden = true;
         previewFrame.removeAttribute("srcdoc");
-        mode = data.resultView ? "readable" : "json";
+        mode = isFileMode() ? "source" : data.resultView ? "readable" : "json";
         linkifyInto(bodyEl, activeText());
         syncToggleState();
         vscode.postMessage({ type: "previewFailed" });
@@ -125,8 +146,19 @@
     linkifyInto(bodyEl, activeText());
   }
 
+  function defaultMode() {
+    if (isFileMode()) {
+      return hasPreview() ? "preview" : "source";
+    }
+    if (hasPreview() && !data.resultView) {
+      return "preview";
+    }
+    return data.resultView ? toolOutputFormat : "json";
+  }
+
   function applyData(msg) {
     data = {
+      source: msg.source === "file" ? "file" : "stdout",
       name: msg.name || "",
       resultRaw: msg.resultRaw || "",
       resultView: msg.resultView || null,
@@ -135,23 +167,24 @@
       previewBody: msg.previewBody || "",
       previewKind: msg.previewKind || "none",
       openExternallyHref: msg.openExternallyHref || null,
+      filePath: msg.filePath || null,
     };
     if (msg.toolOutputFormat === "json" || msg.toolOutputFormat === "readable") {
       toolOutputFormat = msg.toolOutputFormat;
     }
     if (!userOverride) {
-      mode = data.resultView ? toolOutputFormat : "json";
+      mode = defaultMode();
     } else if (mode === "readable" && !data.resultView) {
-      mode = "json";
+      mode = isFileMode() ? "source" : "json";
     } else if (mode === "preview" && !data.previewHtml) {
-      mode = data.resultView ? toolOutputFormat : "json";
+      mode = defaultMode();
     }
     renderHeader();
     renderBody();
   }
 
   readableBtn.addEventListener("click", function () {
-    if (!data.resultView) {
+    if (!data.resultView || isFileMode()) {
       return;
     }
     userOverride = true;
@@ -160,8 +193,17 @@
   });
 
   rawBtn.addEventListener("click", function () {
+    if (isFileMode()) {
+      return;
+    }
     userOverride = true;
     mode = "json";
+    renderBody();
+  });
+
+  sourceBtn.addEventListener("click", function () {
+    userOverride = true;
+    mode = "source";
     renderBody();
   });
 
@@ -205,7 +247,7 @@
       case "config":
         if (msg.toolOutputFormat === "json" || msg.toolOutputFormat === "readable") {
           toolOutputFormat = msg.toolOutputFormat;
-          if (!userOverride && mode !== "preview") {
+          if (!userOverride && mode !== "preview" && !isFileMode()) {
             mode = data.resultView ? toolOutputFormat : "json";
             renderBody();
           }

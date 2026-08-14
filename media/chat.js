@@ -23,15 +23,112 @@
   let museReady = false;
   let assistantEl = null;
   let toolOutputFormat = "readable";
+  let chatFormat = "markdown";
 
+  // keep in sync with canvas.js:LINK_RE / previewContent DOC_PATH_RE
   const LINK_RE =
-    /(?:https?:\/\/[^\s<>"']+|file:\/\/[^\s<>"']+|(?:\/[\w./~-]+\.(?:html?|htm|pdf|md|svg|png|jpe?g|gif|webp)))/gi;
+    /(?:https?:\/\/[^\s<>"']+|file:\/\/[^\s<>"']+|(?:\/[\w./~-]+\.(?:html?|htm|pdf|md|json|ya?ml|toon|csv|tsv|txt|xlsx?|svg|png|jpe?g|gif|webp)))/gi;
+
+  const DOC_PATH_RE =
+    /(?:https?:\/\/[^\s<>"']+\.(?:md|html?|htm|json|ya?ml|toon|csv|tsv|txt|xlsx?)|\/[\w./~-]+\.(?:md|html?|htm|json|ya?ml|toon|csv|tsv|txt|xlsx?)|file:\/\/[^\s<>"']+\.(?:md|html?|htm|json|ya?ml|toon|csv|tsv|txt|xlsx?))/gi;
 
   function scrollBottom() {
     transcript.scrollTop = transcript.scrollHeight;
   }
 
-  function addMsg(className, text, label, linkify) {
+  function kindFromPath(p) {
+    const m = /\.([a-z0-9]+)$/i.exec(p.split(/[?#]/)[0] || "");
+    const ext = (m ? m[1] : "").toLowerCase();
+    if (ext === "md") return "markdown";
+    if (ext === "html" || ext === "htm") return "html";
+    if (ext === "json") return "json";
+    if (ext === "yml" || ext === "yaml") return "yaml";
+    if (ext === "toon") return "toon";
+    if (ext === "csv" || ext === "tsv") return "csv";
+    if (ext === "txt") return "text";
+    if (ext === "xls" || ext === "xlsx") return "xlsx";
+    return "file";
+  }
+
+  function chipKindLabel(kind, path) {
+    switch (kind) {
+      case "markdown":
+        return "Document · MD";
+      case "html":
+        return "Document · HTML";
+      case "json":
+        return "Document · JSON";
+      case "yaml":
+        return "Document · YAML";
+      case "toon":
+        return "Document · TOON";
+      case "csv":
+        return /\.tsv$/i.test(path) ? "Document · TSV" : "Document · CSV";
+      case "text":
+        return "Document · TXT";
+      case "xlsx":
+        return "Spreadsheet · XLSX";
+      default:
+        return "Document";
+    }
+  }
+
+  function fileBaseName(p) {
+    const cleaned = (p || "").replace(/^file:\/\//i, "").split(/[?#]/)[0];
+    const parts = cleaned.split(/[/\\]/);
+    return parts[parts.length - 1] || cleaned;
+  }
+
+  function collectDocPaths(text) {
+    if (!text) {
+      return [];
+    }
+    const re = new RegExp(DOC_PATH_RE.source, "gi");
+    const seen = {};
+    const out = [];
+    let match;
+    while ((match = re.exec(text)) !== null) {
+      const href = match[0];
+      if (seen[href]) {
+        continue;
+      }
+      seen[href] = true;
+      out.push(href);
+    }
+    return out;
+  }
+
+  function appendFileChips(parent, text) {
+    const paths = collectDocPaths(text || "");
+    if (!paths.length) {
+      return;
+    }
+    const row = document.createElement("div");
+    row.className = "file-chips";
+    for (let i = 0; i < paths.length; i++) {
+      const href = paths[i];
+      const kind = kindFromPath(href);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "file-chip";
+      btn.title = href;
+      const name = document.createElement("span");
+      name.className = "file-chip-name";
+      name.textContent = fileBaseName(href);
+      const meta = document.createElement("span");
+      meta.className = "file-chip-meta";
+      meta.textContent = chipKindLabel(kind, href);
+      btn.appendChild(name);
+      btn.appendChild(meta);
+      btn.addEventListener("click", function () {
+        vscode.postMessage({ type: "openCanvasFile", href: href });
+      });
+      row.appendChild(btn);
+    }
+    parent.appendChild(row);
+  }
+
+  function addMsg(className, text, label, linkify, html) {
     const el = document.createElement("div");
     el.className = "msg " + className;
     if (label) {
@@ -42,12 +139,17 @@
     }
     const body = document.createElement("div");
     body.className = "body";
-    if (linkify) {
+    if (className === "assistant" && html && chatFormat === "markdown") {
+      body.classList.add("md-body");
+      body.style.whiteSpace = "normal";
+      body.innerHTML = html;
+    } else if (linkify) {
       linkifyInto(body, text || "");
     } else {
       body.textContent = text;
     }
     el.appendChild(body);
+    appendFileChips(el, text || "");
     transcript.appendChild(el);
     scrollBottom();
     return el;
@@ -218,6 +320,10 @@
 
     header.appendChild(expandBtn);
     renderBody();
+    appendFileChips(
+      el,
+      (data.resultView || "") + "\n" + (data.resultRaw || ""),
+    );
 
     transcript.appendChild(el);
     scrollBottom();
@@ -247,7 +353,7 @@
           addMsg("user", item.text || "");
           break;
         case "assistant":
-          addMsg("assistant", item.text || "", "Muse");
+          addMsg("assistant", item.text || "", "Muse", false, item.html || null);
           break;
         case "tool":
           addToolCard(item);
@@ -351,6 +457,9 @@
         if (msg.toolOutputFormat === "json" || msg.toolOutputFormat === "readable") {
           toolOutputFormat = msg.toolOutputFormat;
         }
+        if (msg.chatFormat === "markdown" || msg.chatFormat === "plain") {
+          chatFormat = msg.chatFormat;
+        }
         break;
       case "session":
         sessionEl.textContent = (msg.sessionId || "").slice(0, 8);
@@ -388,8 +497,17 @@
       }
       case "assistant_final": {
         const body = ensureAssistant();
-        if (msg.text && !body.textContent) {
+        if (msg.html && chatFormat === "markdown") {
+          body.classList.add("md-body");
+          body.style.whiteSpace = "normal";
+          body.innerHTML = msg.html;
+        } else if (msg.text && !body.textContent) {
           body.textContent = msg.text;
+        } else if (msg.text) {
+          body.textContent = msg.text;
+        }
+        if (assistantEl) {
+          appendFileChips(assistantEl, msg.text || "");
         }
         if (msg.terminal && msg.terminal !== "completed") {
           addMsg(

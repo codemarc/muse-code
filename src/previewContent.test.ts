@@ -1,13 +1,43 @@
 import { describe, expect, test } from "bun:test";
 import {
+  buildChatMarkdownHtml,
   buildPreviewFromPayload,
+  buildPreviewFromSource,
   buildPreviewHtml,
+  chipLabelForKind,
+  collectDocPaths,
+  csvToHtmlTable,
   findPrimaryDocPath,
+  kindFromPath,
   markdownToHtml,
   previewBodyFromPayload,
   sanitizeHtmlFragment,
   sniffPreviewKind,
 } from "./previewContent";
+
+describe("kindFromPath", () => {
+  test("maps extensions", () => {
+    expect(kindFromPath("/a/b/c.md")).toBe("markdown");
+    expect(kindFromPath("report.HTML")).toBe("html");
+    expect(kindFromPath("data.json")).toBe("json");
+    expect(kindFromPath("cfg.yaml")).toBe("yaml");
+    expect(kindFromPath("cfg.yml")).toBe("yaml");
+    expect(kindFromPath("x.toon")).toBe("toon");
+    expect(kindFromPath("t.csv")).toBe("csv");
+    expect(kindFromPath("t.tsv")).toBe("csv");
+    expect(kindFromPath("n.txt")).toBe("text");
+    expect(kindFromPath("book.xlsx")).toBe("none");
+    expect(kindFromPath("book.xls")).toBe("none");
+  });
+});
+
+describe("chipLabelForKind", () => {
+  test("labels common kinds", () => {
+    expect(chipLabelForKind("markdown")).toBe("Document · MD");
+    expect(chipLabelForKind("json")).toBe("Document · JSON");
+    expect(chipLabelForKind("none", "sheet.xlsx")).toBe("Spreadsheet · XLSX");
+  });
+});
 
 describe("sniffPreviewKind", () => {
   test("returns none for shell listing", () => {
@@ -33,6 +63,10 @@ describe("sniffPreviewKind", () => {
     expect(
       sniffPreviewKind("<!DOCTYPE html><html><body><h1>Hi</h1></body></html>"),
     ).toBe("html");
+  });
+
+  test("detects json", () => {
+    expect(sniffPreviewKind('{"a":1,"b":[2]}')).toBe("json");
   });
 
   test("path hint forces html", () => {
@@ -80,7 +114,7 @@ describe("previewBodyFromPayload", () => {
 describe("sanitizeHtmlFragment", () => {
   test("strips script tags", () => {
     const out = sanitizeHtmlFragment(
-      '<p>ok</p><script>alert(1)</script><p>end</p>',
+      "<p>ok</p><script>alert(1)</script><p>end</p>",
     );
     expect(out).toContain("<p>ok</p>");
     expect(out).not.toContain("<script");
@@ -94,9 +128,7 @@ describe("sanitizeHtmlFragment", () => {
   });
 
   test("neutralizes javascript href", () => {
-    const out = sanitizeHtmlFragment(
-      '<a href="javascript:alert(1)">x</a>',
-    );
+    const out = sanitizeHtmlFragment('<a href="javascript:alert(1)">x</a>');
     expect(out).toContain('href="#"');
     expect(out).not.toContain("javascript:");
   });
@@ -134,11 +166,31 @@ describe("markdownToHtml", () => {
   });
 });
 
+describe("csvToHtmlTable", () => {
+  test("builds table with header", () => {
+    const html = csvToHtmlTable("a,b\n1,2\n3,4\n");
+    expect(html).toContain("<table");
+    expect(html).toContain("<th>a</th>");
+    expect(html).toContain("<td>1</td>");
+  });
+
+  test("handles tsv", () => {
+    const html = csvToHtmlTable("a\tb\n1\t2\n");
+    expect(html).toContain("<th>a</th>");
+    expect(html).toContain("<td>1</td>");
+  });
+});
+
 describe("buildPreviewHtml / buildPreviewFromPayload", () => {
   test("builds wrapped document for markdown", () => {
     const doc = buildPreviewHtml("# Hi\n\n- a\n- b\n", "markdown");
     expect(doc).toContain("<!DOCTYPE html>");
     expect(doc).toContain("<h1>");
+  });
+
+  test("pretty-prints json", () => {
+    const doc = buildPreviewHtml('{"a":1}', "json");
+    expect(doc).toContain("&quot;a&quot;: 1");
   });
 
   test("buildPreviewFromPayload returns null html for ls", () => {
@@ -164,16 +216,42 @@ describe("buildPreviewHtml / buildPreviewFromPayload", () => {
     expect(built.kind).toBe("markdown");
     expect(built.previewHtml).toContain("<h1>");
   });
+
+  test("buildPreviewFromSource for yaml", () => {
+    const built = buildPreviewFromSource("a: 1\nb: two\n", "yaml");
+    expect(built.kind).toBe("yaml");
+    expect(built.previewHtml).toContain("<pre>");
+    expect(built.previewHtml).toContain("a: 1");
+  });
 });
 
-describe("findPrimaryDocPath", () => {
+describe("buildChatMarkdownHtml", () => {
+  test("returns sanitized fragment", () => {
+    const html = buildChatMarkdownHtml("# Hi\n\n<script>x</script>");
+    expect(html).toContain("<h1>");
+    expect(html).not.toContain("<script");
+  });
+});
+
+describe("findPrimaryDocPath / collectDocPaths", () => {
   test("finds absolute html path", () => {
     expect(findPrimaryDocPath("wrote /tmp/out/report.html ok")).toBe(
       "/tmp/out/report.html",
     );
   });
 
+  test("finds json path", () => {
+    expect(findPrimaryDocPath("wrote /tmp/data.json")).toBe("/tmp/data.json");
+  });
+
   test("returns null when absent", () => {
     expect(findPrimaryDocPath("no docs here")).toBeNull();
+  });
+
+  test("collects unique paths", () => {
+    const paths = collectDocPaths(
+      "a /tmp/a.md and /tmp/a.md again plus /tmp/b.json",
+    );
+    expect(paths).toEqual(["/tmp/a.md", "/tmp/b.json"]);
   });
 });
