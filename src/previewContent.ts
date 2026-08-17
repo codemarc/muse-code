@@ -29,24 +29,51 @@ export interface BuiltPreview {
 
 const BLOCKED_SCHEME = /^(javascript|data|vbscript):/i;
 
-/** Extensions that can open as a canvas file chip. */
-export const CANVAS_FILE_EXT_RE =
-  /\.(?:md|html?|htm|json|ya?ml|toon|csv|tsv|txt|xlsx?)$/i;
+/** Extensions that can open as a canvas file chip. Longest alternative first. */
+const DOC_EXT_ALT = "markdown|md|html?|jsonl?|ya?ml|toon|csv|tsv|txt|xlsx?";
 
-const DOC_PATH_RE =
-  /(?:https?:\/\/[^\s<>"']+\.(?:md|html?|htm|json|ya?ml|toon|csv|tsv|txt|xlsx?)|\/[\w./~-]+\.(?:md|html?|htm|json|ya?ml|toon|csv|tsv|txt|xlsx?)|file:\/\/[^\s<>"']+\.(?:md|html?|htm|json|ya?ml|toon|csv|tsv|txt|xlsx?))/gi;
+/** A trailing extension must end the word so `.jsonl` never matches as `.json`. */
+export const CANVAS_FILE_EXT_RE = new RegExp(`\\.(?:${DOC_EXT_ALT})$`, "i");
+
+/**
+ * A local path must start at a token boundary, so a relative path keeps its
+ * first segment (`docs/STATUS.md`, not `/STATUS.md`) and a path fragment inside
+ * a placeholder like `<root>/…/session.jsonl` is not mistaken for a real one.
+ * Absolute, `~/`, `./`, `../`, and workspace-relative forms all match.
+ */
+const LOCAL_PATH_SOURCE = `(?<![\\w.~/-])/?(?:[\\w.~-]+/)*[\\w.~-]+`;
+
+/** Same, but the path must name a directory, so a bare `file.txt` in `ls`
+ * output is not mistaken for a document reference. */
+const LOCAL_DIR_PATH_SOURCE = `(?<![\\w.~/-])(?:/(?:[\\w.~-]+/)*|(?:[\\w.~-]+/)+)[\\w.~-]+`;
+
+const SCHEME_PATH_SOURCE = `(?:https?://|file://)[^\\s<>"']+`;
+
+const DOC_EXT_TAIL = `\\.(?:${DOC_EXT_ALT})(?![A-Za-z0-9])`;
+
+const DOC_PATH_SOURCE = `(?:${SCHEME_PATH_SOURCE}|${LOCAL_PATH_SOURCE})${DOC_EXT_TAIL}`;
+
+const DIR_DOC_PATH_SOURCE = `(?:${SCHEME_PATH_SOURCE}|${LOCAL_DIR_PATH_SOURCE})${DOC_EXT_TAIL}`;
+
+function docPathRe(): RegExp {
+  return new RegExp(DOC_PATH_SOURCE, "gi");
+}
 
 export function kindFromPath(filePath: string): PreviewKind {
   const base = basename(filePath).toLowerCase();
   const ext = base.includes(".") ? base.slice(base.lastIndexOf(".")) : "";
   switch (ext) {
     case ".md":
+    case ".markdown":
       return "markdown";
     case ".html":
     case ".htm":
       return "html";
     case ".json":
       return "json";
+    case ".jsonl":
+    case ".txt":
+      return "text";
     case ".yml":
     case ".yaml":
       return "yaml";
@@ -55,8 +82,6 @@ export function kindFromPath(filePath: string): PreviewKind {
     case ".csv":
     case ".tsv":
       return "csv";
-    case ".txt":
-      return "text";
     case ".xls":
     case ".xlsx":
       return "none";
@@ -67,8 +92,14 @@ export function kindFromPath(filePath: string): PreviewKind {
 
 export function chipLabelForKind(kind: PreviewKind, filePath?: string): string {
   const ext = filePath
-    ? basename(filePath).split(".").pop()?.toUpperCase() ?? ""
+    ? (basename(filePath).split(".").pop() ?? "").toUpperCase()
     : "";
+  if (/^XLSX?$/.test(ext)) {
+    return `Spreadsheet · ${ext}`;
+  }
+  if (ext) {
+    return `Document · ${ext}`;
+  }
   switch (kind) {
     case "markdown":
       return "Document · MD";
@@ -81,14 +112,11 @@ export function chipLabelForKind(kind: PreviewKind, filePath?: string): string {
     case "toon":
       return "Document · TOON";
     case "csv":
-      return ext === "TSV" ? "Document · TSV" : "Document · CSV";
+      return "Document · CSV";
     case "text":
       return "Document · TXT";
     case "none":
-      if (/\.xlsx?$/i.test(filePath ?? "")) {
-        return "Spreadsheet · XLSX";
-      }
-      return ext ? `Document · ${ext}` : "Document";
+      return "Document";
   }
 }
 
@@ -399,8 +427,9 @@ export function csvToHtmlTable(text: string): string {
   return `${note}<table class="csv-table">${thead}${tbody}</table>`;
 }
 
+/** First document path that names a directory, used to hint preview kind. */
 export function findPrimaryDocPath(text: string): string | null {
-  const matches = text.match(DOC_PATH_RE);
+  const matches = text.match(new RegExp(DIR_DOC_PATH_SOURCE, "gi"));
   if (!matches || matches.length === 0) {
     return null;
   }
@@ -408,7 +437,7 @@ export function findPrimaryDocPath(text: string): string | null {
 }
 
 export function collectDocPaths(text: string): string[] {
-  const matches = text.match(DOC_PATH_RE) ?? [];
+  const matches = text.match(docPathRe()) ?? [];
   const seen = new Set<string>();
   const out: string[] = [];
   for (const m of matches) {

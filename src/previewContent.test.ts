@@ -254,4 +254,48 @@ describe("findPrimaryDocPath / collectDocPaths", () => {
     );
     expect(paths).toEqual(["/tmp/a.md", "/tmp/b.json"]);
   });
+
+  test("does not truncate .jsonl into .json", () => {
+    expect(collectDocPaths("log at /tmp/s/session.jsonl")).toEqual([
+      "/tmp/s/session.jsonl",
+    ]);
+  });
+
+  test("ignores paths with unsupported longer extensions", () => {
+    expect(collectDocPaths("see /tmp/a.mdx and /tmp/b.jsonc")).toEqual([]);
+  });
+
+  test("drops trailing sentence punctuation", () => {
+    expect(collectDocPaths("wrote /tmp/a.md.")).toEqual(["/tmp/a.md"]);
+  });
+
+  test("keeps the leading segment of a relative path", () => {
+    expect(collectDocPaths("Status (docs/STATUS.md: 2026-08-16)")).toEqual([
+      "docs/STATUS.md",
+    ]);
+  });
+
+  test("keeps dot-directory prefixes and drops the trailing period", () => {
+    expect(
+      collectDocPaths("Next: `.trailz/plans/2026-08-17-ism-normalize.md`."),
+    ).toEqual([".trailz/plans/2026-08-17-ism-normalize.md"]);
+  });
+
+  test("matches home-relative and bare paths", () => {
+    expect(collectDocPaths("~/notes.md ./rel.md ../up.md README.md")).toEqual([
+      "~/notes.md",
+      "./rel.md",
+      "../up.md",
+      "README.md",
+    ]);
+  });
+
+  test("ignores source references without a document extension", () => {
+    expect(collectDocPaths("src/museDataPaths.ts:6 museDataDir()")).toEqual([]);
+  });
+
+  test("preview hint needs a directory, chips accept bare filenames", () => {
+    expect(findPrimaryDocPath("total 1\nfile.txt\n")).toBeNull();
+    expect(collectDocPaths("total 1\nfile.txt\n")).toEqual(["file.txt"]);
+  });
 });

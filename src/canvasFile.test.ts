@@ -81,7 +81,38 @@ describe("readCanvasFile", () => {
       const result = readCanvasFile(file, root);
       expect(result.ok).toBe(false);
       if (!result.ok) {
-        expect(result.error).toContain("externally");
+        expect(result.reason).toBe("binary");
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("accepts a file under any allowed root", () => {
+    const workspace = mkdtempSync(join(tmpdir(), "muse-canvas-ws-"));
+    const dataDir = mkdtempSync(join(tmpdir(), "muse-canvas-data-"));
+    try {
+      const file = join(dataDir, "session.jsonl");
+      writeFileSync(file, '{"a":1}\n');
+      expect(readCanvasFile(file, workspace).ok).toBe(false);
+      const result = readCanvasFile(file, [workspace, dataDir]);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.kind).toBe("text");
+      }
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  test("reports missing files distinctly from jail violations", () => {
+    const root = mkdtempSync(join(tmpdir(), "muse-canvas-missing-"));
+    try {
+      const result = readCanvasFile(join(root, "session.json"), root);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toBe("missing");
       }
     } finally {
       rmSync(root, { recursive: true, force: true });

@@ -25,110 +25,52 @@
   let toolOutputFormat = "readable";
   let chatFormat = "markdown";
 
-  // keep in sync with canvas.js:LINK_RE / previewContent DOC_PATH_RE
+  // keep in sync with canvas.js:LINK_RE and previewContent.ts:DOC_PATH_SOURCE
   const LINK_RE =
-    /(?:https?:\/\/[^\s<>"']+|file:\/\/[^\s<>"']+|(?:\/[\w./~-]+\.(?:html?|htm|pdf|md|json|ya?ml|toon|csv|tsv|txt|xlsx?|svg|png|jpe?g|gif|webp)))/gi;
-
-  const DOC_PATH_RE =
-    /(?:https?:\/\/[^\s<>"']+\.(?:md|html?|htm|json|ya?ml|toon|csv|tsv|txt|xlsx?)|\/[\w./~-]+\.(?:md|html?|htm|json|ya?ml|toon|csv|tsv|txt|xlsx?)|file:\/\/[^\s<>"']+\.(?:md|html?|htm|json|ya?ml|toon|csv|tsv|txt|xlsx?))/gi;
+    /(?:(?:https?:\/\/|file:\/\/)[^\s<>"']+|(?<![\w.~/-])\/?(?:[\w.~-]+\/)*[\w.~-]+\.(?:html?|pdf|markdown|md|jsonl?|ya?ml|toon|csv|tsv|txt|xlsx?|svg|png|jpe?g|gif|webp)(?![A-Za-z0-9]))/gi;
 
   function scrollBottom() {
     transcript.scrollTop = transcript.scrollHeight;
   }
 
-  function kindFromPath(p) {
-    const m = /\.([a-z0-9]+)$/i.exec(p.split(/[?#]/)[0] || "");
-    const ext = (m ? m[1] : "").toLowerCase();
-    if (ext === "md") return "markdown";
-    if (ext === "html" || ext === "htm") return "html";
-    if (ext === "json") return "json";
-    if (ext === "yml" || ext === "yaml") return "yaml";
-    if (ext === "toon") return "toon";
-    if (ext === "csv" || ext === "tsv") return "csv";
-    if (ext === "txt") return "text";
-    if (ext === "xls" || ext === "xlsx") return "xlsx";
-    return "file";
-  }
-
-  function chipKindLabel(kind, path) {
-    switch (kind) {
-      case "markdown":
-        return "Document · MD";
-      case "html":
-        return "Document · HTML";
-      case "json":
-        return "Document · JSON";
-      case "yaml":
-        return "Document · YAML";
-      case "toon":
-        return "Document · TOON";
-      case "csv":
-        return /\.tsv$/i.test(path) ? "Document · TSV" : "Document · CSV";
-      case "text":
-        return "Document · TXT";
-      case "xlsx":
-        return "Spreadsheet · XLSX";
-      default:
-        return "Document";
-    }
-  }
-
-  function fileBaseName(p) {
-    const cleaned = (p || "").replace(/^file:\/\//i, "").split(/[?#]/)[0];
-    const parts = cleaned.split(/[/\\]/);
-    return parts[parts.length - 1] || cleaned;
-  }
-
-  function collectDocPaths(text) {
-    if (!text) {
-      return [];
-    }
-    const re = new RegExp(DOC_PATH_RE.source, "gi");
-    const seen = {};
-    const out = [];
-    let match;
-    while ((match = re.exec(text)) !== null) {
-      const href = match[0];
-      if (seen[href]) {
-        continue;
-      }
-      seen[href] = true;
-      out.push(href);
-    }
-    return out;
-  }
-
-  function appendFileChips(parent, text) {
-    const paths = collectDocPaths(text || "");
-    if (!paths.length) {
+  /**
+   * Render chips for files the extension host verified exist on disk.
+   * `files` items are { href, name, label }.
+   */
+  function appendFileChips(parent, files) {
+    if (!files || !files.length) {
       return;
     }
     const row = document.createElement("div");
     row.className = "file-chips";
-    for (let i = 0; i < paths.length; i++) {
-      const href = paths[i];
-      const kind = kindFromPath(href);
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (!file || !file.href) {
+        continue;
+      }
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "file-chip";
-      btn.title = href;
+      btn.title = file.href;
       const name = document.createElement("span");
       name.className = "file-chip-name";
-      name.textContent = fileBaseName(href);
+      name.textContent = file.name || file.href;
       const meta = document.createElement("span");
       meta.className = "file-chip-meta";
-      meta.textContent = chipKindLabel(kind, href);
+      meta.textContent = file.label || "Document";
       btn.appendChild(name);
       btn.appendChild(meta);
       btn.addEventListener("click", function () {
-        vscode.postMessage({ type: "openCanvasFile", href: href });
+        vscode.postMessage({ type: "openCanvasFile", href: file.href });
       });
       row.appendChild(btn);
     }
-    parent.appendChild(row);
+    if (row.childNodes.length) {
+      parent.appendChild(row);
+    }
   }
 
-  function addMsg(className, text, label, linkify, html) {
+  function addMsg(className, text, label, linkify, html, files) {
     const el = document.createElement("div");
     el.className = "msg " + className;
     if (label) {
@@ -149,10 +91,41 @@
       body.textContent = text;
     }
     el.appendChild(body);
-    appendFileChips(el, text || "");
+    appendFileChips(el, files);
     transcript.appendChild(el);
     scrollBottom();
     return el;
+  }
+
+  function countChar(text, ch) {
+    let n = 0;
+    for (let i = 0; i < text.length; i += 1) {
+      if (text[i] === ch) {
+        n += 1;
+      }
+    }
+    return n;
+  }
+
+  // keep in sync with src/linkTarget.ts:trimLinkEnd
+  function trimLinkEnd(href) {
+    const closers = { ")": "(", "]": "[", "}": "{" };
+    let out = href;
+    for (let guard = 0; guard < 8; guard += 1) {
+      const stripped = out.replace(/[.,;:!?'"*`>]+$/, "");
+      if (stripped !== out) {
+        out = stripped;
+        continue;
+      }
+      const last = out.slice(-1);
+      const opener = closers[last];
+      if (opener && countChar(out, last) > countChar(out, opener)) {
+        out = out.slice(0, -1);
+        continue;
+      }
+      break;
+    }
+    return out;
   }
 
   function linkifyInto(el, text) {
@@ -167,7 +140,12 @@
       if (match.index > lastIndex) {
         el.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
       }
-      const href = match[0];
+      const href = trimLinkEnd(match[0]);
+      lastIndex = re.lastIndex;
+      if (!href) {
+        el.appendChild(document.createTextNode(match[0]));
+        continue;
+      }
       const a = document.createElement("a");
       a.href = href;
       a.textContent = href;
@@ -177,7 +155,8 @@
         vscode.postMessage({ type: "openLink", href: href });
       });
       el.appendChild(a);
-      lastIndex = re.lastIndex;
+      // Punctuation trimmed off the match stays in the surrounding text.
+      lastIndex = match.index + href.length;
     }
     if (lastIndex < text.length) {
       el.appendChild(document.createTextNode(text.slice(lastIndex)));
@@ -320,10 +299,7 @@
 
     header.appendChild(expandBtn);
     renderBody();
-    appendFileChips(
-      el,
-      (data.resultView || "") + "\n" + (data.resultRaw || ""),
-    );
+    appendFileChips(el, data.files);
 
     transcript.appendChild(el);
     scrollBottom();
@@ -353,7 +329,14 @@
           addMsg("user", item.text || "");
           break;
         case "assistant":
-          addMsg("assistant", item.text || "", "Muse", false, item.html || null);
+          addMsg(
+            "assistant",
+            item.text || "",
+            "Muse",
+            false,
+            item.html || null,
+            item.files,
+          );
           break;
         case "tool":
           addToolCard(item);
@@ -507,7 +490,7 @@
           body.textContent = msg.text;
         }
         if (assistantEl) {
-          appendFileChips(assistantEl, msg.text || "");
+          appendFileChips(assistantEl, msg.files);
         }
         if (msg.terminal && msg.terminal !== "completed") {
           addMsg(

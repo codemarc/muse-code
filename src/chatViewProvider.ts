@@ -1,7 +1,8 @@
 import * as vscode from "vscode";
 import type { CanvasPanel, CanvasPayload } from "./canvasPanel";
-import { readCanvasFile } from "./canvasFile";
+import { buildFileChips, type FileChip } from "./fileChips";
 import { probeMuseAuth } from "./museAuth";
+import { openLinkInMainView } from "./openInMainView";
 import {
   checkMuseInstallation,
   resolveMuseBinary,
@@ -16,14 +17,8 @@ import {
   formatSessionPickLabel,
   listMuseSessionsForWorkspace,
 } from "./museSessions";
-import { resolveToolLinkPath } from "./linkTarget";
-import { openToolLink } from "./openLink";
 import { isSupportedPlatform, unsupportedPlatformMessage } from "./platform";
-import {
-  buildChatMarkdownHtml,
-  buildPreviewFromSource,
-  kindFromPath,
-} from "./previewContent";
+import { buildChatMarkdownHtml } from "./previewContent";
 import { ensureHeadlessConsent } from "./safety";
 import type { SessionStore } from "./sessionStore";
 import { formatToolResult } from "./toolResultFormat";
@@ -127,55 +122,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.canvasPanel.show(payload);
   }
 
+  /** Chip clicks and chat links both land in the main editor area. */
   private async openCanvasFile(href: string): Promise<void> {
-    const folder = this.folders.getFolder();
-    if (!folder) {
-      void vscode.window.showWarningMessage(
-        "Open a folder to preview files in the canvas.",
-      );
-      return;
-    }
-    const resolved = resolveToolLinkPath(href, folder.fsPath);
-    if (!resolved) {
-      void vscode.window.showWarningMessage(`Could not resolve path: ${href}`);
-      return;
-    }
-
-    const kind = kindFromPath(resolved);
-    if (kind === "none" && /\.xlsx?$/i.test(resolved)) {
-      const ok = await openToolLink(resolved, folder.uri);
-      if (!ok) {
-        void vscode.window.showWarningMessage(
-          `Could not open spreadsheet: ${resolved}`,
-        );
-      }
-      return;
-    }
-
-    const read = readCanvasFile(resolved, folder.fsPath);
-    if (!read.ok) {
-      // Still offer external open when it's a real path we can't preview.
-      if (read.filePath && /larger|Excel/i.test(read.error)) {
-        const choice = await vscode.window.showWarningMessage(
-          read.error,
-          "Open externally",
-        );
-        if (choice === "Open externally") {
-          await openToolLink(read.filePath, folder.uri);
-        }
-        return;
-      }
-      void vscode.window.showWarningMessage(read.error);
-      return;
-    }
-
-    const built = buildPreviewFromSource(read.source, read.kind);
-    this.canvasPanel.showFile({
-      path: read.filePath,
-      title: read.filePath.split(/[/\\]/).pop() || read.filePath,
-      kind: read.kind,
-      source: read.source,
-      previewHtml: built.previewHtml,
+    await openLinkInMainView(href, {
+      workspaceFolder: this.folders.getFolder()?.uri,
+      showFile: (file) => this.canvasPanel.showFile(file),
     });
   }
 
@@ -747,6 +698,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           type: "assistant_final",
           text: event.text,
           html: this.assistantHtml(event.text),
+          files: this.fileChips(event.text),
           terminal: event.terminal,
           reason: event.reason ?? null,
         });
@@ -760,6 +712,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           name: event.name,
           resultRaw: event.resultRaw,
           resultView: event.resultView,
+          files: this.fileChips(event.resultView || event.resultRaw),
           execMeta: event.execMeta,
         });
         break;
@@ -804,6 +757,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         type: "assistant",
         text: item.text,
         html: this.assistantHtml(item.text),
+        files: this.fileChips(item.text),
       };
     }
     if (item.type !== "tool") {
@@ -816,8 +770,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       name: item.name,
       resultRaw: formatted.resultRaw,
       resultView: formatted.resultView,
+      files: this.fileChips(formatted.resultView || formatted.resultRaw),
       execMeta: formatted.execMeta,
     };
+  }
+
+  /** Verified file chips for a message body (paths that exist on disk). */
+  private fileChips(text: string | undefined): FileChip[] {
+    if (!text) {
+      return [];
+    }
+    return buildFileChips(text, this.folders.getFolder()?.fsPath);
   }
 
   private chatFormat(): "markdown" | "plain" {
@@ -833,12 +796,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return buildChatMarkdownHtml(text);
   }
 
+  /** Links in chat: web URLs go to the browser, local paths to the main view. */
   private async handleOpenLink(href: string): Promise<void> {
-    const folder = this.folders.getFolder();
-    const ok = await openToolLink(href, folder?.uri);
-    if (!ok) {
-      void vscode.window.showWarningMessage(`Could not open link: ${href}`);
-    }
+    await this.openCanvasFile(href);
   }
 
   private getHtml(webview: vscode.Webview): string {

@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.1.16] - 2026-08-17
+
+### Changed
+
+- Links and file chips now open in the main editor area: canvas Preview when the
+  file can be rendered, otherwise an editor tab. Only web URLs and formats with no
+  in-app renderer (`.xls(x)`, `.pdf`, Office docs) still go to the OS
+- Canvas file reads also cover Muse's own data directory, so session logs under
+  `~/.local/share/muse` open instead of being refused
+
+### Fixed
+
+- File chips are verified on the extension host and only appear for paths that
+  exist on disk, so placeholder paths in prose no longer produce a dead chip
+- `.jsonl` paths are no longer truncated to `.json` when detecting documents;
+  `.jsonl` and `.markdown` are recognized
+- Links no longer swallow the punctuation that follows them in prose, so
+  `(https://example.com/)` links to `https://example.com/` and a trailing period
+  or comma stays in the text. Brackets a URL opens itself are kept, e.g.
+  `…/wiki/Foo_(bar)`
+- Relative paths keep their leading segment: `docs/STATUS.md` and
+  `.trailz/plans/x.md` no longer detect as `/STATUS.md` and `/plans/x.md`.
+  Relative, `./`, `../`, and `~/` paths now resolve against the Muse folder
+  
 ## [0.1.15] - 2026-08-13
 
 ### Added

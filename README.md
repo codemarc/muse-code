@@ -91,7 +91,9 @@ Open this folder in VS Code/Cursor and press **F5** (Run Muse CLI Chat Extension
 
 The sidebar keeps Muse’s `--session-id` in workspace state. **History** / the session id chip opens a picker of retained sessions for the current folder (from Muse’s local session index). Choosing one resumes that id for later `muse exec` calls and hydrates the transcript from the session log (with `muse export` as fallback). A small local cache paints instantly while hydration runs. **Clean up sessions** (also in that picker) permanently deletes selected sessions for this folder from Muse’s local index and removes their log directories under `~/.local/share/muse/sessions` (close interactive Muse if the delete fails due to a DB lock).
 
-**Open in canvas** on a tool card shows the full tool output beside the editor (no sidebar height cap), with Readable / Raw and Preview when the stdout looks like a document. Paths to `.md`, `.html`, `.json`, `.yml`/`.yaml`, `.toon`, `.csv`/`.tsv`, and `.txt` appear as file chips; clicking a chip reads the workspace file into the canvas (Preview / Source). Excel files open externally only. Clicking a `.html` path via Open externally still uses the system browser.
+**Open in canvas** on a tool card shows the full tool output beside the editor (no sidebar height cap), with Readable / Raw and Preview when the stdout looks like a document.
+
+Paths to `.md`, `.html`, `.json`/`.jsonl`, `.yml`/`.yaml`, `.toon`, `.csv`/`.tsv`, and `.txt` appear as file chips. Chips are verified on the extension host, so only paths that exist on disk get one. Clicking a chip or a path in chat opens it in the main editor area: the canvas (Preview / Source) for files it can render from the workspace or Muse's data directory (512 KB cap), and a regular editor tab for everything else, including images and files outside those roots. Web URLs open in the browser, as do `.xls(x)`, `.pdf`, and Office documents, which have no in-app renderer. **Open externally** in the canvas still hands the current file to the OS, so an HTML report goes to the system browser.
 
 ## Safety
 

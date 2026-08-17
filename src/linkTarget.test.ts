@@ -3,6 +3,7 @@ import {
   classifyToolLink,
   resolveToolLinkPath,
   shouldOpenInBrowser,
+  trimLinkEnd,
 } from "./linkTarget";
 
 describe("linkTarget", () => {
@@ -37,6 +38,49 @@ describe("linkTarget", () => {
       "/Users/dev/project",
     );
     expect(resolved).toBe("/Users/dev/project/dist/index.html");
+  });
+
+  test("strips wrapping punctuation while classifying", () => {
+    expect(
+      classifyToolLink("https://www.enterpriseintegrationpatterns.com/)"),
+    ).toEqual({
+      kind: "http",
+      href: "https://www.enterpriseintegrationpatterns.com/",
+    });
+    expect(classifyToolLink("/tmp/report.html.")).toEqual({
+      kind: "file",
+      filePath: "/tmp/report.html",
+    });
+  });
+});
+
+describe("trimLinkEnd", () => {
+  test("drops an unbalanced closing bracket", () => {
+    expect(trimLinkEnd("https://www.enterpriseintegrationpatterns.com/)")).toBe(
+      "https://www.enterpriseintegrationpatterns.com/",
+    );
+    expect(trimLinkEnd("https://example.com/a]")).toBe("https://example.com/a");
+  });
+
+  test("keeps brackets the link opens itself", () => {
+    expect(trimLinkEnd("https://en.wikipedia.org/wiki/Foo_(bar)")).toBe(
+      "https://en.wikipedia.org/wiki/Foo_(bar)",
+    );
+  });
+
+  test("drops sentence and markup punctuation", () => {
+    expect(trimLinkEnd("https://example.com/x.")).toBe("https://example.com/x");
+    expect(trimLinkEnd("https://example.com/x,")).toBe("https://example.com/x");
+    expect(trimLinkEnd("https://example.com/x*")).toBe("https://example.com/x");
+    expect(trimLinkEnd("https://example.com/x'")).toBe("https://example.com/x");
+    expect(trimLinkEnd("https://example.com/x).")).toBe(
+      "https://example.com/x",
+    );
+  });
+
+  test("keeps a meaningful trailing slash and path", () => {
+    expect(trimLinkEnd("https://example.com/")).toBe("https://example.com/");
+    expect(trimLinkEnd("/tmp/a.md")).toBe("/tmp/a.md");
   });
 });
 

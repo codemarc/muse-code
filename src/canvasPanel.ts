@@ -1,5 +1,6 @@
 import { basename } from "node:path";
 import * as vscode from "vscode";
+import { openLinkInMainView } from "./openInMainView";
 import { openToolLink } from "./openLink";
 import {
   buildPreviewFromPayload,
@@ -247,12 +248,12 @@ export class CanvasPanel implements vscode.Disposable {
     });
   }
 
+  /** Links inside the canvas reuse the shared main-view routing. */
   private async handleOpenLink(href: string): Promise<void> {
-    const folder = this.folders.getFolder();
-    const ok = await openToolLink(href, folder?.uri);
-    if (!ok) {
-      void vscode.window.showWarningMessage(`Could not open link: ${href}`);
-    }
+    await openLinkInMainView(href, {
+      workspaceFolder: this.folders.getFolder()?.uri,
+      showFile: (file) => this.showFile(file),
+    });
   }
 
   private async handleOpenExternally(): Promise<void> {
