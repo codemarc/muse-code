@@ -525,6 +525,16 @@
         if (msg.toolOutputFormat === "json" || msg.toolOutputFormat === "readable") {
           toolOutputFormat = msg.toolOutputFormat;
         }
+        if (
+          msg.toolDisplay === "compact" ||
+          msg.toolDisplay === "balanced" ||
+          msg.toolDisplay === "detailed"
+        ) {
+          toolDisplay = msg.toolDisplay;
+          toolCards.forEach(function (card) {
+            card.applyDisplay();
+          });
+        }
         if (msg.chatFormat === "markdown" || msg.chatFormat === "plain") {
           chatFormat = msg.chatFormat;
         }

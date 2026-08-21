@@ -248,4 +248,76 @@ describe("chat tool-card disclosure", () => {
       "search files",
     ]);
   });
+
+  test("balanced opens short output and folds long output", () => {
+    const chat = loadChat();
+    chat.send({ type: "config", toolDisplay: "balanced" });
+    chat.send(tool({ resultView: "short output" }));
+    chat.send(
+      tool({
+        resultView: Array.from({ length: 13 }, (_, i) => `line ${i}`).join("\n"),
+      }),
+    );
+    chat.send(tool({ resultView: "x".repeat(801) }));
+
+    expect(
+      chat.transcript.children[0].querySelector(".tool-details")!.hidden,
+    ).toBe(false);
+    expect(
+      chat.transcript.children[1].querySelector(".tool-details")!.hidden,
+    ).toBe(true);
+    expect(
+      chat.transcript.children[2].querySelector(".tool-details")!.hidden,
+    ).toBe(true);
+  });
+
+  test("detailed opens long output", () => {
+    const chat = loadChat();
+    chat.send({ type: "config", toolDisplay: "detailed" });
+    chat.send(tool({ resultView: "x".repeat(900) }));
+    expect(
+      chat.transcript.children[0].querySelector(".tool-details")!.hidden,
+    ).toBe(false);
+  });
+
+  test("config changes update only cards without a manual override", () => {
+    const chat = loadChat();
+    chat.send({ type: "config", toolDisplay: "compact" });
+    chat.send(tool());
+    chat.send(
+      tool({ execMeta: { description: "Second tool", exitCode: 0 } }),
+    );
+    chat.transcript.children[0].querySelector(".tool-disclosure")!.click();
+
+    chat.send({ type: "config", toolDisplay: "detailed" });
+    expect(
+      chat.transcript.children[0].querySelector(".tool-details")!.hidden,
+    ).toBe(false);
+    expect(
+      chat.transcript.children[1].querySelector(".tool-details")!.hidden,
+    ).toBe(false);
+
+    chat.send({ type: "config", toolDisplay: "compact" });
+    expect(
+      chat.transcript.children[0].querySelector(".tool-details")!.hidden,
+    ).toBe(false);
+    expect(
+      chat.transcript.children[1].querySelector(".tool-details")!.hidden,
+    ).toBe(true);
+  });
+
+  test("History rebuild applies the current display setting afresh", () => {
+    const chat = loadChat();
+    chat.send({ type: "config", toolDisplay: "detailed" });
+    chat.send({ type: "history", items: [tool()] });
+    expect(
+      chat.transcript.children[0].querySelector(".tool-details")!.hidden,
+    ).toBe(false);
+
+    chat.send({ type: "config", toolDisplay: "compact" });
+    chat.send({ type: "history", items: [tool()] });
+    expect(
+      chat.transcript.children[0].querySelector(".tool-details")!.hidden,
+    ).toBe(true);
+  });
 });
