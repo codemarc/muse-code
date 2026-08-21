@@ -2,7 +2,7 @@
   "name": "muse-cli-chat",
   "displayName": "Muse CLI Chat",
   "description": "Unofficial VS Code / Cursor sidebar for Meta Muse Code. Wraps the muse CLI (muse exec --json); not affiliated with Meta.",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "publisher": "codemarc",
   "license": "MIT",
   "icon": "media/icon.png",

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.17] - 2026-08-21
+
+### Changed
+
+- Canvas files now default to **Source** view instead of Preview. Preview remains the default for previewable tool (stdout) output
+
 ## [0.1.16] - 2026-08-17
 
 ### Changed

@@ -185,7 +185,7 @@
 
   function defaultMode() {
     if (isFileMode()) {
-      return hasPreview() ? "preview" : "source";
+      return "source";
     }
     if (hasPreview() && !data.resultView) {
       return "preview";
