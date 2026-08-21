@@ -23,7 +23,9 @@
   let museReady = false;
   let assistantEl = null;
   let toolOutputFormat = "readable";
+  let toolDisplay = "compact";
   let chatFormat = "markdown";
+  const toolCards = new Set();
 
   // keep in sync with canvas.js:LINK_RE and previewContent.ts:DOC_PATH_SOURCE
   const LINK_RE =
@@ -174,6 +176,48 @@
     return text.slice(0, PREVIEW_CHARS) + "…";
   }
 
+  function cleanSummaryLine(text) {
+    return String(text || "").replace(/`/g, "").trim();
+  }
+
+  function friendlyToolName(name) {
+    const value = String(name || "").trim();
+    if (!value || /^call[_-][a-z0-9]+$/i.test(value)) {
+      return "";
+    }
+    return value.replace(/[_-]+/g, " ");
+  }
+
+  function toolSummary(data) {
+    const meta = data.execMeta || {};
+    if (meta.description) {
+      return cleanSummaryLine(meta.description);
+    }
+    const readableLine = String(data.resultView || "")
+      .split("\n")
+      .map(cleanSummaryLine)
+      .find(Boolean);
+    if (readableLine) {
+      return readableLine;
+    }
+    if (meta.command) {
+      return "$ " + truncateOneLine(cleanSummaryLine(meta.command), 80);
+    }
+    return friendlyToolName(data.name) || "Tool result";
+  }
+
+  function shouldOpenToolCard(text) {
+    if (toolDisplay === "detailed") {
+      return true;
+    }
+    if (toolDisplay === "compact") {
+      return false;
+    }
+    return (
+      text.length <= PREVIEW_CHARS && text.split("\n").length <= PREVIEW_LINES
+    );
+  }
+
   function addToolCard(data) {
     const el = document.createElement("div");
     el.className = "msg tool tool-card";
@@ -181,14 +225,21 @@
     const header = document.createElement("div");
     header.className = "tool-header";
 
+    const disclosureBtn = document.createElement("button");
+    disclosureBtn.type = "button";
+    disclosureBtn.className = "tool-disclosure";
+
+    const chevron = document.createElement("span");
+    chevron.className = "tool-chevron";
+    chevron.setAttribute("aria-hidden", "true");
+    disclosureBtn.appendChild(chevron);
+
     const label = document.createElement("span");
-    label.className = "label";
+    label.className = "label tool-summary";
     const meta = data.execMeta || {};
-    label.textContent =
-      meta.description ||
-      (meta.command ? "$ " + truncateOneLine(meta.command, 48) : "") ||
-      "tool: " + (data.name || "tool");
-    header.appendChild(label);
+    label.textContent = toolSummary(data);
+    disclosureBtn.appendChild(label);
+    header.appendChild(disclosureBtn);
 
     if (meta.exitCode !== undefined && meta.exitCode !== null) {
       const badge = document.createElement("span");
@@ -245,9 +296,14 @@
     header.appendChild(actions);
     el.appendChild(header);
 
+    const details = document.createElement("div");
+    details.className = "tool-details";
+
     const body = document.createElement("pre");
     body.className = "tool-body";
-    el.appendChild(body);
+    details.appendChild(body);
+    appendFileChips(details, data.files);
+    el.appendChild(details);
 
     function activeText() {
       if (mode === "readable" && data.resultView) {
@@ -261,11 +317,14 @@
       rawBtn.classList.toggle("active", mode === "json");
     }
 
+    let cardOpen = shouldOpenToolCard(activeText());
+    let manualDisclosure = false;
+
     function renderBody() {
       const full = activeText();
       const needsExpand =
         full.length > PREVIEW_CHARS || full.split("\n").length > PREVIEW_LINES;
-      expandBtn.hidden = !needsExpand;
+      expandBtn.hidden = !cardOpen || !needsExpand;
 
       let display = full;
       if (!expanded) {
@@ -279,6 +338,26 @@
       expandBtn.textContent = expanded ? "Collapse" : "Expand";
       syncToggleState();
     }
+
+    function renderDisclosure() {
+      disclosureBtn.setAttribute("aria-expanded", cardOpen ? "true" : "false");
+      chevron.textContent = cardOpen ? "▾" : "▸";
+      el.classList.toggle("open", cardOpen);
+      actions.hidden = !cardOpen;
+      details.hidden = !cardOpen;
+      renderBody();
+    }
+
+    const controller = {
+      applyDisplay() {
+        if (manualDisclosure) {
+          return;
+        }
+        cardOpen = shouldOpenToolCard(activeText());
+        renderDisclosure();
+      },
+    };
+    toolCards.add(controller);
 
     readableBtn.addEventListener("click", function () {
       if (!hasReadable) {
@@ -296,10 +375,15 @@
       renderBody();
       scrollBottom();
     });
+    disclosureBtn.addEventListener("click", function () {
+      manualDisclosure = true;
+      cardOpen = !cardOpen;
+      renderDisclosure();
+      scrollBottom();
+    });
 
     header.appendChild(expandBtn);
-    renderBody();
-    appendFileChips(el, data.files);
+    renderDisclosure();
 
     transcript.appendChild(el);
     scrollBottom();
@@ -315,6 +399,7 @@
 
   function clearTranscript() {
     transcript.innerHTML = "";
+    toolCards.clear();
     assistantEl = null;
   }
 
