@@ -5,6 +5,8 @@
 ### Changed
 
 - Canvas files now default to **Source** view instead of Preview. Preview remains the default for previewable tool (stdout) output
+- Tool results now default to compact one-line disclosure rows, with
+  `muse.toolDisplay` settings for Compact, Balanced, and Detailed presentation
 
 ## [0.1.16] - 2026-08-17
 

@@ -249,6 +249,21 @@
           "default": "readable",
           "description": "Default view for tool results in the chat sidebar. Readable shows terminal-style output for shell/exec results; JSON shows the raw payload. Each tool card can still toggle views."
         },
+        "muse.toolDisplay": {
+          "type": "string",
+          "enum": [
+            "compact",
+            "balanced",
+            "detailed"
+          ],
+          "enumDescriptions": [
+            "Fold every tool result to a one-line summary.",
+            "Open short tool results and fold long results.",
+            "Open every tool result."
+          ],
+          "default": "compact",
+          "description": "How tool results are initially disclosed in chat. Every card can still be opened or folded individually."
+        },
         "muse.chatFormat": {
           "type": "string",
           "enum": [

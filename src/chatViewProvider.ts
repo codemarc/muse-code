@@ -138,6 +138,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         "toolOutputFormat",
         "readable",
       ),
+      toolDisplay: cfg.get<"compact" | "balanced" | "detailed">(
+        "toolDisplay",
+        "compact",
+      ),
       chatFormat: cfg.get<"markdown" | "plain">("chatFormat", "markdown"),
     });
   }

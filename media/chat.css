@@ -280,16 +280,53 @@ body {
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 8px;
-  margin-bottom: 6px;
+  margin-bottom: 0;
 }
 
-.tool-header .label {
+.tool-disclosure {
+  flex: 1 1 240px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.tool-disclosure:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
+}
+
+.tool-chevron {
+  flex: 0 0 auto;
+  width: 1em;
+  opacity: 0.75;
+}
+
+.tool-summary {
   flex: 1 1 auto;
-  margin-bottom: 0;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.tool-header .label {
+  margin-bottom: 0;
+}
+
+.tool-card.open .tool-header {
+  margin-bottom: 6px;
+}
+
+.tool-details[hidden],
+.tool-actions[hidden] {
+  display: none;
 }
 
 .tool-exit {

@@ -59,6 +59,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (
         e.affectsConfiguration("muse.toolOutputFormat") ||
+        e.affectsConfiguration("muse.toolDisplay") ||
         e.affectsConfiguration("muse.chatFormat")
       ) {
         provider.postConfig();
