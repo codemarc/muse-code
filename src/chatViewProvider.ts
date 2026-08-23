@@ -146,6 +146,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
+  expandAll(): void {
+    this.post({ type: "expandAll" });
+  }
+
+  collapseAll(): void {
+    this.post({ type: "collapseAll" });
+  }
+
   reveal(): void {
     void vscode.commands.executeCommand("muse.chatView.focus");
   }

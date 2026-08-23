@@ -62,7 +62,7 @@ class FakeElement {
     return this.children.length;
   }
 
-  set scrollTop(_value: number) {}
+  scrollTop = 0;
 
   appendChild(child: FakeElement): FakeElement {
     child.parent = this;
@@ -211,6 +211,28 @@ describe("chat tool-card disclosure", () => {
     expect(card.querySelector(".tool-details")!.hidden).toBe(true);
   });
 
+  test("expanding or collapsing a card does not scroll the transcript", () => {
+    const chat = loadChat();
+    chat.send({ type: "config", toolDisplay: "compact" });
+    chat.send(tool());
+    chat.send(tool({ execMeta: { description: "Second tool", exitCode: 0 } }));
+
+    chat.transcript.scrollTop = 3;
+    chat.transcript.children[0].querySelector(".tool-disclosure")!.click();
+    expect(chat.transcript.scrollTop).toBe(3);
+    expect(
+      chat.transcript.children[0].querySelector(".tool-details")!.hidden,
+    ).toBe(false);
+
+    chat.transcript.children[0].querySelector(".tool-disclosure")!.click();
+    expect(chat.transcript.scrollTop).toBe(3);
+
+    chat.send({ type: "expandAll" });
+    expect(chat.transcript.scrollTop).toBe(3);
+    chat.send({ type: "collapseAll" });
+    expect(chat.transcript.scrollTop).toBe(3);
+  });
+
   test("failed tools remain folded with a failure badge", () => {
     const chat = loadChat();
     chat.send({ type: "config", toolDisplay: "compact" });
@@ -246,6 +268,34 @@ describe("chat tool-card disclosure", () => {
       "Readable fallback",
       "$ git status",
       "search files",
+    ]);
+  });
+
+  test("generic Tool result titles use the first line of content", () => {
+    const chat = loadChat();
+    chat.send({ type: "config", toolDisplay: "compact" });
+    chat.send(
+      tool({
+        resultView: null,
+        resultRaw: "ISM status — dirty working tree on main\nHead: abc",
+        execMeta: {},
+      }),
+    );
+    chat.send(
+      tool({
+        name: "tool_result",
+        resultView: "Tool result",
+        resultRaw: "{\n  \"ok\": true\n}",
+        execMeta: {},
+      }),
+    );
+
+    const labels = chat.transcript.children.map(
+      (card) => card.querySelector(".tool-summary")!.textContent,
+    );
+    expect(labels).toEqual([
+      "ISM status — dirty working tree on main",
+      '"ok": true',
     ]);
   });
 
@@ -318,6 +368,62 @@ describe("chat tool-card disclosure", () => {
     chat.send({ type: "history", items: [tool()] });
     expect(
       chat.transcript.children[0].querySelector(".tool-details")!.hidden,
+    ).toBe(true);
+  });
+
+  test("expandAll opens every card and collapseAll folds them", () => {
+    const chat = loadChat();
+    chat.send({ type: "config", toolDisplay: "compact" });
+    chat.send(tool());
+    chat.send(tool({ execMeta: { description: "Second tool", exitCode: 0 } }));
+
+    chat.send({ type: "expandAll" });
+    expect(
+      chat.transcript.children.map(
+        (card) => card.querySelector(".tool-details")!.hidden,
+      ),
+    ).toEqual([false, false]);
+    expect(
+      chat.transcript.children.map((card) =>
+        card.querySelector(".tool-disclosure")!.getAttribute("aria-expanded"),
+      ),
+    ).toEqual(["true", "true"]);
+
+    chat.send({ type: "collapseAll" });
+    expect(
+      chat.transcript.children.map(
+        (card) => card.querySelector(".tool-details")!.hidden,
+      ),
+    ).toEqual([true, true]);
+    expect(
+      chat.transcript.children.map((card) =>
+        card.querySelector(".tool-disclosure")!.getAttribute("aria-expanded"),
+      ),
+    ).toEqual(["false", "false"]);
+  });
+
+  test("expandAll and collapseAll count as manual overrides", () => {
+    const chat = loadChat();
+    chat.send({ type: "config", toolDisplay: "compact" });
+    chat.send(tool());
+    chat.send(tool({ execMeta: { description: "Second tool", exitCode: 0 } }));
+
+    chat.send({ type: "expandAll" });
+    chat.send({ type: "config", toolDisplay: "compact" });
+    expect(
+      chat.transcript.children[0].querySelector(".tool-details")!.hidden,
+    ).toBe(false);
+    expect(
+      chat.transcript.children[1].querySelector(".tool-details")!.hidden,
+    ).toBe(false);
+
+    chat.send({ type: "collapseAll" });
+    chat.send({ type: "config", toolDisplay: "detailed" });
+    expect(
+      chat.transcript.children[0].querySelector(".tool-details")!.hidden,
+    ).toBe(true);
+    expect(
+      chat.transcript.children[1].querySelector(".tool-details")!.hidden,
     ).toBe(true);
   });
 });

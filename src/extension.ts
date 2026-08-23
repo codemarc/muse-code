@@ -56,6 +56,12 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("muse.openInCanvas", () =>
       canvasPanel.reveal(),
     ),
+    vscode.commands.registerCommand("muse.expandAll", () =>
+      provider.expandAll(),
+    ),
+    vscode.commands.registerCommand("muse.collapseAll", () =>
+      provider.collapseAll(),
+    ),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (
         e.affectsConfiguration("muse.toolOutputFormat") ||

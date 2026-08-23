@@ -123,6 +123,16 @@
         "command": "muse.openInCanvas",
         "title": "Muse CLI Chat: Open Last Tool Result in Canvas",
         "icon": "$(open-preview)"
+      },
+      {
+        "command": "muse.expandAll",
+        "title": "Muse CLI Chat: Expand All",
+        "icon": "$(expand-all)"
+      },
+      {
+        "command": "muse.collapseAll",
+        "title": "Muse CLI Chat: Collapse All",
+        "icon": "$(collapse-all)"
       }
     ],
     "menus": {
@@ -146,6 +156,16 @@
           "command": "muse.openInCanvas",
           "when": "view == muse.chatView",
           "group": "navigation@3"
+        },
+        {
+          "command": "muse.expandAll",
+          "when": "view == muse.chatView",
+          "group": "navigation@4"
+        },
+        {
+          "command": "muse.collapseAll",
+          "when": "view == muse.chatView",
+          "group": "navigation@5"
         },
         {
           "command": "muse.newSession",

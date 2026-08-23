@@ -188,22 +188,49 @@
     return value.replace(/[_-]+/g, " ");
   }
 
+  function isGenericSummary(text) {
+    return /^tool result$/i.test(String(text || "").trim());
+  }
+
+  function firstContentLine(text) {
+    return (
+      String(text || "")
+        .split("\n")
+        .map(cleanSummaryLine)
+        .find(function (line) {
+          return (
+            line &&
+            !isGenericSummary(line) &&
+            line !== "{" &&
+            line !== "}" &&
+            line !== "[" &&
+            line !== "]"
+          );
+        }) || ""
+    );
+  }
+
   function toolSummary(data) {
     const meta = data.execMeta || {};
     if (meta.description) {
       return cleanSummaryLine(meta.description);
     }
-    const readableLine = String(data.resultView || "")
-      .split("\n")
-      .map(cleanSummaryLine)
-      .find(Boolean);
+    const readableLine = firstContentLine(data.resultView);
     if (readableLine) {
       return readableLine;
     }
     if (meta.command) {
       return "$ " + truncateOneLine(cleanSummaryLine(meta.command), 80);
     }
-    return friendlyToolName(data.name) || "Tool result";
+    const name = friendlyToolName(data.name);
+    if (name && !isGenericSummary(name)) {
+      return name;
+    }
+    const contentLine = firstContentLine(data.resultRaw);
+    if (contentLine) {
+      return truncateOneLine(contentLine, 80);
+    }
+    return name || "Tool result";
   }
 
   function shouldOpenToolCard(text) {
@@ -356,6 +383,14 @@
         cardOpen = shouldOpenToolCard(activeText());
         renderDisclosure();
       },
+      setOpen(open) {
+        manualDisclosure = true;
+        cardOpen = open;
+        if (!open) {
+          expanded = false;
+        }
+        renderDisclosure();
+      },
     };
     toolCards.add(controller);
 
@@ -373,13 +408,11 @@
     expandBtn.addEventListener("click", function () {
       expanded = !expanded;
       renderBody();
-      scrollBottom();
     });
     disclosureBtn.addEventListener("click", function () {
       manualDisclosure = true;
       cardOpen = !cardOpen;
       renderDisclosure();
-      scrollBottom();
     });
 
     header.appendChild(expandBtn);
@@ -559,6 +592,16 @@
         break;
       case "history":
         renderHistory(msg.items || []);
+        break;
+      case "expandAll":
+        toolCards.forEach(function (card) {
+          card.setOpen(true);
+        });
+        break;
+      case "collapseAll":
+        toolCards.forEach(function (card) {
+          card.setOpen(false);
+        });
         break;
       case "cleared":
         clearTranscript();
