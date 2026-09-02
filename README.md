@@ -21,7 +21,7 @@ muse login
 # or: export META_API_KEY=...   # must be visible to the editor process
 ```
 
-The sidebar treats Muse as ready only when the CLI is present **and** credentials are visible (`META_API_KEY` in the editor env, stored `~/.config/muse/auth.json`, or `muse.useEchoProvider`). A key set only in your terminal shell does not reach Cursor/VS Code unless you launch the app from that shell or set it in the GUI environment.
+The sidebar treats Muse as ready only when the CLI is present **and** credentials are visible (`META_API_KEY` in the editor env, `~/.config/muse/auth.json` with an inline key/token **or** a Keychain-backed `muse login`, or `muse.useEchoProvider`). A key set only in your terminal shell does not reach Cursor/VS Code unless you launch the app from that shell or set it in the GUI environment.
 
 ## Install (published)
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.18] - 2026-09-02
+
+### Fixed
+
+- Setup now treats Muse Code 1.0.x `auth.json` as ready when Meta OAuth is stored in the macOS Keychain (`storage: "keychain"`). The previous probe only looked for `access_token` / `api_key` in the file, so a valid `muse login` looked like a missing credential.
+
 ## [0.1.17] - 2026-08-21
 
 ### Changed
