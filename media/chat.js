@@ -13,7 +13,17 @@
   const setupInstall = document.getElementById("setup-install");
   const recheckBtn = document.getElementById("recheck");
   const docsBtn = document.getElementById("docs");
+  const museAiBtn = document.getElementById("muse-ai");
   const pickFolderBtn = document.getElementById("pick-folder");
+
+  const submitChord =
+    typeof navigator !== "undefined" &&
+    /Mac|iPhone|iPad/.test(navigator.platform || "")
+      ? "⌘Enter"
+      : "Ctrl+Enter";
+  input.placeholder =
+    "Ask Muse to plan, edit, or validate… (" + submitChord + " to send)";
+  sendBtn.title = "Send (" + submitChord + ")";
 
   const PREVIEW_LINES = 12;
   const PREVIEW_CHARS = 800;
@@ -536,12 +546,18 @@
   docsBtn.addEventListener("click", function () {
     vscode.postMessage({ type: "openDocs" });
   });
+  museAiBtn.addEventListener("click", function () {
+    vscode.postMessage({ type: "openMuseAi" });
+  });
   pickFolderBtn.addEventListener("click", function () {
     vscode.postMessage({ type: "selectFolder" });
   });
 
   input.addEventListener("keydown", function (e) {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key !== "Enter" || e.isComposing) {
+      return;
+    }
+    if (e.metaKey || e.ctrlKey) {
       e.preventDefault();
       submit();
     }

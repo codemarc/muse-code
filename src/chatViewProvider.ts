@@ -11,6 +11,11 @@ import {
   type MuseRunHandle,
 } from "./museCli";
 import { loadSessionTranscript } from "./museExport";
+import {
+  MUSE_AI_URL,
+  selectHandoffTranscript,
+  transcriptToMarkdown,
+} from "./transcriptMarkdown";
 import type { MuseUiEvent } from "./museJsonl";
 import {
   deleteMuseSessions,
@@ -98,6 +103,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             vscode.Uri.parse("https://dev.meta.ai/docs/muse-code"),
           );
           break;
+        case "openMuseAi":
+          await this.openMuseAi();
+          break;
         case "openLink":
           await this.handleOpenLink(String(msg.href ?? ""));
           break;
@@ -152,6 +160,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   collapseAll(): void {
     this.post({ type: "collapseAll" });
+  }
+
+  async openMuseAi(): Promise<void> {
+    const markdown = await this.buildMuseAiHandoffMarkdown();
+    if (markdown) {
+      try {
+        await vscode.env.clipboard.writeText(markdown);
+      } catch {
+        void vscode.window.showWarningMessage(
+          "Could not copy the session to the clipboard. Opening Muse.ai anyway.",
+        );
+      }
+    }
+    try {
+      await vscode.env.openExternal(vscode.Uri.parse(MUSE_AI_URL));
+    } catch {
+      void vscode.window.showErrorMessage(`Could not open ${MUSE_AI_URL}`);
+      return;
+    }
+    if (markdown) {
+      void vscode.window.showInformationMessage(
+        "Copied this Muse Code session to the clipboard. Paste it in Muse.ai to continue.",
+      );
+    }
   }
 
   reveal(): void {
@@ -589,6 +621,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
+  private async buildMuseAiHandoffMarkdown(): Promise<string> {
+    const sessionId = this.sessions.getSessionId();
+    const folder = this.folders.getFolder();
+    let exported: TranscriptItem[] = [];
+    if (folder && !this.run) {
+      const root = inspectWorkspaceRoot(folder.fsPath);
+      if (root.ok) {
+        const listed = listMuseSessionsForWorkspace(root.path, { limit: 80 });
+        const match = listed.find((s) => s.sessionId === sessionId);
+        const loaded = await loadSessionTranscript({
+          sessionId,
+          workspacePath: root.path,
+          sessionLogPath: match?.sessionLogPath,
+        });
+        exported = loaded.items;
+      }
+    }
+    const items = selectHandoffTranscript({
+      liveItems: this.liveTranscript,
+      exportedItems: exported,
+      running: Boolean(this.run),
+    });
+    return transcriptToMarkdown(items, {
+      sessionId,
+      workspaceName: folder?.name,
+    });
+  }
+
   private postFolder(): void {
     const folder = this.folders.getFolder();
     const multi = (vscode.workspace.workspaceFolders?.length ?? 0) > 1;
@@ -836,7 +896,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <header class="top">
     <div class="brand-wrap">
       <div class="brand">Muse CLI Chat</div>
-      <div class="unofficial">Unofficial · wraps Meta Muse Code</div>
+      <div class="unofficial">
+        Unofficial · wraps Meta Muse Code
+        <!-- <button type="button" id="muse-ai" class="muse-ai-link" title="Copy this session and open muse.ai">muse.ai</button> -->
+      </div>
     </div>
     <div class="meta">
       <div id="folder" class="folder"></div>
@@ -856,11 +919,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   </div>
   <main id="transcript" class="transcript" aria-live="polite"></main>
   <footer class="composer">
-    <textarea id="input" rows="3" placeholder="Ask Muse to plan, edit, or validate…"></textarea>
+    <textarea id="input" rows="3" placeholder="Ask Muse to plan, edit, or validate… (⌘Enter to send)"></textarea>
     <div class="actions">
       <button type="button" id="history" class="secondary">History</button>
       <button type="button" id="stop" class="secondary" disabled>Stop</button>
-      <button type="button" id="send" class="primary">Send</button>
+      <button type="button" id="send" class="primary" title="Send (⌘Enter)">Send</button>
     </div>
     <p class="hint">History resumes Muse’s --session-id (export-backed). First send may ask to enable disable-approval. Not affiliated with Meta.</p>
   </footer>

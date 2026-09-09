@@ -55,7 +55,7 @@ Open this folder in VS Code/Cursor and press **F5** (Run Muse CLI Chat Extension
 1. Open a real directory (not a symlink)
 2. Command Palette → **Muse CLI Chat: Open Chat** (or click the Muse activity icon)
 3. Optional: set `muse.useEchoProvider` to `true` for offline JSONL UI testing
-4. Send a prompt
+4. Send a prompt (**⌘Enter** on macOS, **Ctrl+Enter** on Linux, or the Send button). Enter inserts a newline.
 
 ## Commands
 
@@ -66,6 +66,9 @@ Open this folder in VS Code/Cursor and press **F5** (Run Muse CLI Chat Extension
 | Muse CLI Chat: New Session | New `--session-id` |
 | Muse CLI Chat: Stop | SIGINT the running `muse exec` |
 | Muse CLI Chat: Open Interactive Terminal | Full Muse TUI (approvals, slash commands) |
+| Muse CLI Chat: Copy Session and Open Muse.ai | Copy the current session as markdown, then open [muse.ai](https://muse.ai/) |
+| Muse CLI Chat: Open Website | Muse Code product page |
+| Muse CLI Chat: Open Billing | Meta AI billing |
 | Muse CLI Chat: Check Installation | `muse --version` |
 | Muse CLI Chat: Select Workspace Folder | Pick which root to use (multi-root) |
 | Muse CLI Chat: Resume Session | Pick a retained Muse `--session-id` for this folder and reload history |

@@ -32,6 +32,7 @@ class FakeElement {
   title = "";
   href = "";
   value = "";
+  placeholder = "";
   disabled = false;
   parent?: FakeElement;
   private ownText = "";
@@ -82,6 +83,13 @@ class FakeElement {
     }
   }
 
+  dispatch(type: string, event: Record<string, unknown> = {}): void {
+    const payload = { preventDefault() {}, ...event };
+    for (const listener of this.listeners.get(type) ?? []) {
+      listener(payload);
+    }
+  }
+
   setAttribute(name: string, value: string): void {
     this.attributes.set(name, value);
   }
@@ -107,7 +115,7 @@ class FakeElement {
   }
 }
 
-function loadChat() {
+function loadChat(opts?: { platform?: string }) {
   const ids = [
     "transcript",
     "input",
@@ -122,10 +130,12 @@ function loadChat() {
     "setup-install",
     "recheck",
     "docs",
+    "muse-ai",
     "pick-folder",
   ];
   const elements = new Map(ids.map((id) => [id, new FakeElement()]));
   let onMessage: Listener | undefined;
+  const posted: unknown[] = [];
 
   const document = {
     getElementById: (id: string) => elements.get(id),
@@ -143,16 +153,29 @@ function loadChat() {
   };
   const script = readFileSync(resolve("media/chat.js"), "utf8");
   runInNewContext(script, {
-    acquireVsCodeApi: () => ({ postMessage: () => undefined }),
+    acquireVsCodeApi: () => ({
+      postMessage: (msg: unknown) => {
+        posted.push(msg);
+      },
+    }),
     document,
     window,
+    navigator: { platform: opts?.platform ?? "MacIntel" },
   });
 
+  const input = elements.get("input")!;
   return {
     transcript: elements.get("transcript")!,
+    input,
+    sendBtn: elements.get("send")!,
+    posted,
     send(data: unknown) {
       if (!onMessage) throw new Error("chat message listener was not installed");
       onMessage({ data });
+    },
+    ready() {
+      if (!onMessage) throw new Error("chat message listener was not installed");
+      onMessage({ data: { type: "setup", ok: true } });
     },
   };
 }
@@ -425,5 +448,51 @@ describe("chat tool-card disclosure", () => {
     expect(
       chat.transcript.children[1].querySelector(".tool-details")!.hidden,
     ).toBe(true);
+  });
+});
+
+describe("composer submit key", () => {
+  function submitPosts(chat: { posted: unknown[] }) {
+    return chat.posted.filter(
+      (msg) =>
+        Boolean(msg) &&
+        typeof msg === "object" &&
+        (msg as { type?: string }).type === "submit",
+    );
+  }
+
+  test("⌘Enter / Ctrl+Enter sends, Enter inserts a newline", () => {
+    const chat = loadChat({ platform: "MacIntel" });
+    chat.ready();
+    chat.input.value = "hello muse";
+
+    chat.input.dispatch("keydown", { key: "Enter", shiftKey: false });
+    expect(submitPosts(chat)).toEqual([]);
+    expect(chat.input.value).toBe("hello muse");
+
+    chat.input.dispatch("keydown", {
+      key: "Enter",
+      metaKey: true,
+    });
+    expect(submitPosts(chat)).toEqual([{ type: "submit", prompt: "hello muse" }]);
+    expect(chat.input.value).toBe("");
+  });
+
+  test("Ctrl+Enter sends on non-Mac", () => {
+    const chat = loadChat({ platform: "Linux x86_64" });
+    chat.ready();
+    chat.input.value = "ping";
+    chat.input.dispatch("keydown", { key: "Enter", ctrlKey: true });
+    expect(submitPosts(chat)).toEqual([{ type: "submit", prompt: "ping" }]);
+  });
+
+  test("placeholder names the submit chord", () => {
+    const mac = loadChat({ platform: "MacIntel" });
+    expect(mac.input.placeholder).toContain("⌘Enter");
+    expect(mac.sendBtn.title).toContain("⌘Enter");
+
+    const linux = loadChat({ platform: "Linux x86_64" });
+    expect(linux.input.placeholder).toContain("Ctrl+Enter");
+    expect(linux.sendBtn.title).toContain("Ctrl+Enter");
   });
 });

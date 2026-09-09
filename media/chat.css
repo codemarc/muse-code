@@ -47,6 +47,27 @@ body {
   font-size: 10px;
   opacity: 0.65;
   line-height: 1.3;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.muse-ai-link {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--vscode-textLink-foreground);
+  cursor: pointer;
+  font: inherit;
+  opacity: 1;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.muse-ai-link:hover {
+  color: var(--vscode-textLink-activeForeground);
 }
 
 .setup {

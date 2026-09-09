@@ -31,6 +31,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("muse.openInteractiveTerminal", () =>
       provider.openInteractiveTerminal(),
     ),
+    vscode.commands.registerCommand("muse.openMuseAi", () =>
+      provider.openMuseAi(),
+    ),
     vscode.commands.registerCommand("muse.openWebsite", () =>
       vscode.env.openExternal(
         vscode.Uri.parse("https://developer.meta.com/ai/products/muse-code/"),

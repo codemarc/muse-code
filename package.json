@@ -2,7 +2,7 @@
   "name": "muse-cli-chat",
   "displayName": "Muse CLI Chat",
   "description": "Unofficial VS Code / Cursor sidebar for Meta Muse Code. Wraps the muse CLI (muse exec --json); not affiliated with Meta.",
-	"version": "0.1.18",
+	"version": "0.1.19",
   "publisher": "codemarc",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -89,6 +89,11 @@
         "command": "muse.openInteractiveTerminal",
         "title": "Muse CLI Chat: Open Interactive Terminal",
         "icon": "$(terminal)"
+      },
+      {
+        "command": "muse.openMuseAi",
+        "title": "Muse CLI Chat: Copy Session and Open Muse.ai",
+        "icon": "$(link-external)"
       },
       {
         "command": "muse.openWebsite",
@@ -179,6 +184,11 @@
         },
         {
           "command": "muse.openInteractiveTerminal",
+          "when": "view == muse.chatView",
+          "group": "navigation"
+        },
+        {
+          "command": "muse.openMuseAi",
           "when": "view == muse.chatView",
           "group": "navigation"
         },

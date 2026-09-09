@@ -66,4 +66,45 @@ describe("muse.toolDisplay configuration", () => {
     expect(provider).toContain('"expandAll"');
     expect(provider).toContain('"collapseAll"');
   });
+
+  test("contributes a muse.ai title command and webview handoff", () => {
+    const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
+    const commands = pkg.contributes.commands as Array<{
+      command: string;
+      icon?: string;
+    }>;
+    const menus = pkg.contributes.menus["view/title"] as Array<{
+      command: string;
+      when?: string;
+    }>;
+    const extension = readFileSync(resolve("src/extension.ts"), "utf8");
+    const provider = readFileSync(resolve("src/chatViewProvider.ts"), "utf8");
+
+    expect(commands).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          command: "muse.openMuseAi",
+          icon: "$(link-external)",
+        }),
+      ]),
+    );
+    expect(menus).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          command: "muse.openMuseAi",
+          when: "view == muse.chatView",
+        }),
+      ]),
+    );
+    expect(extension).toContain('registerCommand("muse.openMuseAi"');
+    expect(extension).toContain("provider.openMuseAi()");
+    expect(provider).toContain('"openMuseAi"');
+    expect(provider).toContain('id="muse-ai"');
+    expect(provider).toContain("clipboard.writeText");
+    expect(provider).toContain("MUSE_AI_URL");
+    expect(provider).toContain("transcriptToMarkdown");
+    expect(extension).toContain(
+      "https://developer.meta.com/ai/products/muse-code/",
+    );
+  });
 });

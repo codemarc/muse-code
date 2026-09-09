@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.19] - 2026-09-08
+
+### Added
+
+- **Open Muse.ai**: view title button, Command Palette entry, and a `muse.ai` link in the chat header. Copies the current Muse Code session (hydrated log / `muse export`) as markdown, then opens Meta's personal Muse app in the browser. Globe still opens Muse Code docs; this control is the consumer app
+- Prompt box: **⌘Enter** (macOS) or **Ctrl+Enter** (Linux) sends. Enter inserts a newline.
+
 ## [0.1.18] - 2026-09-02
 
 ### Fixed
