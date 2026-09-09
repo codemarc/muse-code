@@ -8,6 +8,7 @@
   const sessionEl = document.getElementById("session");
   const sessionBtn = document.getElementById("session-btn");
   const folderEl = document.getElementById("folder");
+  const executionModeEl = document.getElementById("execution-mode");
   const setupEl = document.getElementById("setup");
   const setupMsg = document.getElementById("setup-msg");
   const setupInstall = document.getElementById("setup-install");
@@ -15,6 +16,7 @@
   const docsBtn = document.getElementById("docs");
   const museAiBtn = document.getElementById("muse-ai");
   const pickFolderBtn = document.getElementById("pick-folder");
+  const mentionsEl = document.getElementById("mentions");
 
   const submitChord =
     typeof navigator !== "undefined" &&
@@ -22,7 +24,7 @@
       ? "⌘Enter"
       : "Ctrl+Enter";
   input.placeholder =
-    "Ask Muse to plan, edit, or validate… (" + submitChord + " to send)";
+    "Ask Muse… (@ file, " + submitChord + " to send)";
   sendBtn.title = "Send (" + submitChord + ")";
 
   const PREVIEW_LINES = 12;
@@ -36,6 +38,10 @@
   let toolDisplay = "compact";
   let chatFormat = "markdown";
   const toolCards = new Set();
+  let mentionItems = [];
+  let mentionIndex = 0;
+  let mentionRequestId = 0;
+  let mentionToken = null;
 
   // keep in sync with canvas.js:LINK_RE and previewContent.ts:DOC_PATH_SOURCE
   const LINK_RE =
@@ -522,6 +528,7 @@
     if (!prompt || running || !museReady) {
       return;
     }
+    hideMentions();
     assistantEl = null;
     vscode.postMessage({ type: "submit", prompt });
     input.value = "";
@@ -532,6 +539,150 @@
       return;
     }
     vscode.postMessage({ type: "pickSession" });
+  }
+
+  // keep in sync with src/fileMentions.ts
+  function mentionQueryAt(text, cursor) {
+    const before = text.slice(0, Math.max(0, cursor));
+    const match = before.match(/@[A-Za-z0-9_./-]*$/);
+    if (!match || match.index == null) {
+      return null;
+    }
+    const start = match.index;
+    if (start > 0 && !/\s/.test(before.charAt(start - 1))) {
+      return null;
+    }
+    return { start: start, end: cursor, query: match[0].slice(1) };
+  }
+
+  function hideMentions() {
+    mentionItems = [];
+    mentionIndex = 0;
+    mentionToken = null;
+    if (mentionsEl) {
+      mentionsEl.hidden = true;
+      mentionsEl.textContent = "";
+    }
+  }
+
+  function applyMention(path) {
+    const cursor =
+      typeof input.selectionStart === "number"
+        ? input.selectionStart
+        : input.value.length;
+    const token = mentionToken || mentionQueryAt(input.value, cursor);
+    if (!token) {
+      hideMentions();
+      return;
+    }
+    const insert = "`" + path + "` ";
+    input.value =
+      input.value.slice(0, token.start) + insert + input.value.slice(token.end);
+    const nextCursor = token.start + insert.length;
+    input.selectionStart = nextCursor;
+    input.selectionEnd = nextCursor;
+    hideMentions();
+    if (typeof input.focus === "function") {
+      input.focus();
+    }
+  }
+
+  function renderMentions(items) {
+    if (!mentionsEl) {
+      return;
+    }
+    mentionItems = items || [];
+    mentionIndex = 0;
+    mentionsEl.textContent = "";
+    if (!mentionItems.length) {
+      mentionsEl.hidden = true;
+      return;
+    }
+    mentionsEl.hidden = false;
+    for (let i = 0; i < mentionItems.length; i++) {
+      const item = mentionItems[i];
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "mention-item" + (i === 0 ? " active" : "");
+      btn.setAttribute("data-path", item.path);
+      btn.textContent = item.path + " · " + (item.source || "file");
+      btn.addEventListener("mousedown", function (e) {
+        e.preventDefault();
+        applyMention(item.path);
+      });
+      mentionsEl.appendChild(btn);
+    }
+  }
+
+  function highlightMention(index) {
+    if (!mentionsEl || !mentionItems.length) {
+      return;
+    }
+    mentionIndex = (index + mentionItems.length) % mentionItems.length;
+    const buttons = mentionsEl.querySelectorAll
+      ? mentionsEl.querySelectorAll(".mention-item")
+      : mentionsEl.children;
+    for (let i = 0; i < buttons.length; i++) {
+      const el = buttons[i];
+      if (!el || !el.classList) {
+        continue;
+      }
+      if (i === mentionIndex) {
+        el.classList.add("active");
+      } else {
+        el.classList.toggle("active", false);
+      }
+    }
+  }
+
+  function requestMentions() {
+    const cursor =
+      typeof input.selectionStart === "number"
+        ? input.selectionStart
+        : input.value.length;
+    const token = mentionQueryAt(input.value, cursor);
+    mentionToken = token;
+    if (!token) {
+      hideMentions();
+      return;
+    }
+    mentionRequestId += 1;
+    vscode.postMessage({
+      type: "mentionQuery",
+      query: token.query,
+      requestId: mentionRequestId,
+    });
+  }
+
+  function addChangesCard(msg) {
+    const files = msg.files || [];
+    const lines = files.map(function (file) {
+      const status = file.status === "??" ? "untracked" : file.status || "M";
+      return (file.path || "") + " (" + status + ")";
+    });
+    const el = addMsg(
+      "changes",
+      lines.join("\n") || "Working tree changed.",
+      "Changed files",
+    );
+    const actions = document.createElement("div");
+    actions.className = "changes-actions";
+    const openBtn = document.createElement("button");
+    openBtn.type = "button";
+    openBtn.className = "secondary";
+    openBtn.textContent = "Open diff";
+    openBtn.addEventListener("click", function () {
+      vscode.postMessage({
+        type: "openCanvas",
+        payload: {
+          name: "Changed files",
+          resultView: msg.markdown || "",
+          resultRaw: msg.markdown || "",
+        },
+      });
+    });
+    actions.appendChild(openBtn);
+    el.appendChild(actions);
   }
 
   sendBtn.addEventListener("click", submit);
@@ -546,19 +697,55 @@
   docsBtn.addEventListener("click", function () {
     vscode.postMessage({ type: "openDocs" });
   });
-  museAiBtn.addEventListener("click", function () {
-    vscode.postMessage({ type: "openMuseAi" });
-  });
+  if (museAiBtn) {
+    museAiBtn.addEventListener("click", function () {
+      vscode.postMessage({ type: "openMuseAi" });
+    });
+  }
   pickFolderBtn.addEventListener("click", function () {
     vscode.postMessage({ type: "selectFolder" });
   });
 
-  input.addEventListener("keydown", function (e) {
-    if (e.key !== "Enter" || e.isComposing) {
+  input.addEventListener("input", requestMentions);
+  input.addEventListener("keyup", function (e) {
+    if (e.key === "Escape" || e.key === "ArrowDown" || e.key === "ArrowUp") {
       return;
     }
-    if (e.metaKey || e.ctrlKey) {
+    requestMentions();
+  });
+  input.addEventListener("keydown", function (e) {
+    if (e.isComposing) {
+      return;
+    }
+    const pickerOpen = mentionsEl && !mentionsEl.hidden && mentionItems.length;
+    if (pickerOpen) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        hideMentions();
+        return;
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        highlightMention(mentionIndex + 1);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        highlightMention(mentionIndex - 1);
+        return;
+      }
+      if ((e.key === "Enter" || e.key === "Tab") && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        const item = mentionItems[mentionIndex];
+        if (item) {
+          applyMention(item.path);
+        }
+        return;
+      }
+    }
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
+      hideMentions();
       submit();
     }
   });
@@ -571,6 +758,10 @@
 
     switch (msg.type) {
       case "config":
+        if (executionModeEl && msg.executionModeLabel) {
+          executionModeEl.textContent = "Mode: " + msg.executionModeLabel;
+          executionModeEl.title = msg.executionModeDescription || "";
+        }
         if (msg.toolOutputFormat === "json" || msg.toolOutputFormat === "readable") {
           toolOutputFormat = msg.toolOutputFormat;
         }
@@ -661,6 +852,14 @@
         break;
       case "tool":
         addToolCard(msg);
+        break;
+      case "changes":
+        addChangesCard(msg);
+        break;
+      case "mentionResults":
+        if (Number(msg.requestId) === mentionRequestId) {
+          renderMentions(msg.items || []);
+        }
         break;
       case "task":
         addMsg("task", msg.text || "", "task");

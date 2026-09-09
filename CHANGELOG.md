@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0] - 2026-09-09
+
+### Added
+
+- **Execution modes:** 2.0 makes `headless` and `interactive` explicit. Headless native chat remains backed by `muse exec --json`; interactive mode uses the integrated Muse terminal for approvals and interactive input. MSP is reserved for a future host-backed mode.
+- **File mentions:** type `@` in the prompt box to pick an open, git-changed, or workspace file. The path is inserted as `` `path` `` so Muse can read it. This is not Cursor-style attach-with-contents
+- **Changed-file diffs:** after a turn, the sidebar lists files Muse changed in the working tree and opens the diff in canvas. Review only: files are already on disk. No accept/reject
+
 ## [0.1.19] - 2026-09-08
 
 ### Added

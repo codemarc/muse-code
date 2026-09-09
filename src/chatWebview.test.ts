@@ -33,6 +33,8 @@ class FakeElement {
   href = "";
   value = "";
   placeholder = "";
+  selectionStart = 0;
+  selectionEnd = 0;
   disabled = false;
   parent?: FakeElement;
   private ownText = "";
@@ -90,6 +92,21 @@ class FakeElement {
     }
   }
 
+  focus(): void {}
+
+  querySelectorAll(selector: string): FakeElement[] {
+    const className = selector.startsWith(".") ? selector.slice(1) : "";
+    const out: FakeElement[] = [];
+    const walk = (el: FakeElement) => {
+      for (const child of el.children) {
+        if (className && child.hasClass(className)) out.push(child);
+        walk(child);
+      }
+    };
+    walk(this);
+    return out;
+  }
+
   setAttribute(name: string, value: string): void {
     this.attributes.set(name, value);
   }
@@ -132,6 +149,7 @@ function loadChat(opts?: { platform?: string }) {
     "docs",
     "muse-ai",
     "pick-folder",
+    "mentions",
   ];
   const elements = new Map(ids.map((id) => [id, new FakeElement()]));
   let onMessage: Listener | undefined;
@@ -168,6 +186,7 @@ function loadChat(opts?: { platform?: string }) {
     transcript: elements.get("transcript")!,
     input,
     sendBtn: elements.get("send")!,
+    mentions: elements.get("mentions")!,
     posted,
     send(data: unknown) {
       if (!onMessage) throw new Error("chat message listener was not installed");
@@ -494,5 +513,54 @@ describe("composer submit key", () => {
     const linux = loadChat({ platform: "Linux x86_64" });
     expect(linux.input.placeholder).toContain("Ctrl+Enter");
     expect(linux.sendBtn.title).toContain("Ctrl+Enter");
+  });
+});
+
+describe("composer file mentions", () => {
+  function mentionPosts(chat: { posted: unknown[] }) {
+    return chat.posted.filter(
+      (msg) =>
+        Boolean(msg) &&
+        typeof msg === "object" &&
+        (msg as { type?: string }).type === "mentionQuery",
+    );
+  }
+
+  test("typing @ posts a mention query", () => {
+    const chat = loadChat();
+    chat.input.value = "see @ch";
+    chat.input.selectionStart = 7;
+    chat.input.dispatch("input");
+    expect(mentionPosts(chat)).toEqual([
+      { type: "mentionQuery", query: "ch", requestId: 1 },
+    ]);
+  });
+
+  test("picking a result inserts a backticked path", () => {
+    const chat = loadChat();
+    chat.input.value = "see @ch";
+    chat.input.selectionStart = 7;
+    chat.input.dispatch("input");
+    chat.send({
+      type: "mentionResults",
+      requestId: 1,
+      items: [{ path: "src/chat.js", source: "open" }],
+    });
+    expect(chat.mentions.hidden).toBe(false);
+    chat.mentions.children[0]!.dispatch("mousedown");
+    expect(chat.input.value).toBe("see `src/chat.js` ");
+    expect(chat.mentions.hidden).toBe(true);
+  });
+
+  test("renders a changed-files card with an Open diff action", () => {
+    const chat = loadChat();
+    chat.send({
+      type: "changes",
+      files: [{ path: "src/chat.js", status: "M" }],
+      markdown: "# Changed files\n",
+    });
+    const card = chat.transcript.children[0]!;
+    expect(card.textContent).toContain("src/chat.js");
+    expect(card.textContent).toContain("Open diff");
   });
 });

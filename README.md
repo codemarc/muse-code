@@ -55,13 +55,16 @@ Open this folder in VS Code/Cursor and press **F5** (Run Muse CLI Chat Extension
 1. Open a real directory (not a symlink)
 2. Command Palette → **Muse CLI Chat: Open Chat** (or click the Muse activity icon)
 3. Optional: set `muse.useEchoProvider` to `true` for offline JSONL UI testing
-4. Send a prompt (**⌘Enter** on macOS, **Ctrl+Enter** on Linux, or the Send button). Enter inserts a newline.
+4. Send a prompt (**⌘Enter** on macOS, **Ctrl+Enter** on Linux, or the Send button). Enter inserts a newline. Type `@` to mention a workspace file.
 
 ## Commands
 
 | Command | Action |
 |---------|--------|
-| Muse CLI Chat: Open Chat | Focus the sidebar |
+| Muse CLI Chat: Open Chat | Open the configured native chat surface |
+| Muse CLI Chat: Open in Editor Panel | Open the native chat in an editor panel |
+| Muse CLI Chat: Open in Secondary Sidebar | Open the native chat in the secondary sidebar (or activity-bar fallback) |
+| Muse CLI Chat: Open in New Window | Reopen the current workspace with Muse ready |
 | Muse CLI Chat: Send Selection | Send the editor selection as context |
 | Muse CLI Chat: New Session | New `--session-id` |
 | Muse CLI Chat: Stop | SIGINT the running `muse exec` |
@@ -90,6 +93,9 @@ Open this folder in VS Code/Cursor and press **F5** (Run Muse CLI Chat Extension
 | `toolOutputFormat` | `readable` | Default tool result view: `readable` (terminal-style for exec) or `json` (raw payload). Each card can toggle. |
 | `toolDisplay` | `compact` | Initial tool-card disclosure: `compact` folds all results, `balanced` opens only short results, and `detailed` opens all results. |
 | `chatFormat` | `markdown` | Assistant messages in the sidebar: `markdown` (sanitized) or `plain` text. |
+| `preferredLocation` | `secondarySidebar` | Where **Open Chat** opens the native UI: `secondarySidebar`, `panel`, or `terminal`. |
+| `useTerminal` | `false` | Open Chat launches the full Muse interactive terminal instead of the native UI. |
+| `executionMode` | `headless` | `headless` keeps native chat on `muse exec --json`; `interactive` opens the integrated Muse terminal so approvals and interactive input are available. MSP is reserved for a future host-backed mode. |
 
 ## History
 
@@ -100,6 +106,10 @@ Readable / Raw output, file chips, and **Open in canvas**. The `toolDisplay`
 setting chooses Compact, Balanced, or Detailed initial disclosure; failed calls
 remain folded with a red exit badge until opened. The canvas shows the full tool
 output beside the editor and adds Preview when stdout looks like a document.
+
+Type `@` in the composer to mention a file (open editors, git changes, then workspace search). After a turn, files that changed in the git working tree appear as a **Changed files** card and open in canvas as a diff. That is a review of writes Muse already made, not an accept/reject patch flow.
+
+The chat is mode-aware. **Headless** is the default native-chat path and cannot answer interactive approval prompts. **Interactive** uses the integrated Muse terminal for workflows that need approvals or other interactive input. `muse.useTerminal` remains a compatible alias for opening the interactive path. MSP is planned as a future execution backend, not a 2.0 setting.
 
 Paths to `.md`, `.html`, `.json`/`.jsonl`, `.yml`/`.yaml`, `.toon`, `.csv`/`.tsv`, and `.txt` appear as file chips. Chips are verified on the extension host, so only paths that exist on disk get one. Clicking a chip or a path in chat opens it in the main editor area: the canvas (Preview / Source) for files it can render from the workspace or Muse's data directory (512 KB cap), and a regular editor tab for everything else, including images and files outside those roots. Web URLs open in the browser, as do `.xls(x)`, `.pdf`, and Office documents, which have no in-app renderer. **Open externally** in the canvas still hands the current file to the OS, so an HTML report goes to the system browser.
 

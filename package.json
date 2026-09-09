@@ -2,7 +2,7 @@
   "name": "muse-cli-chat",
   "displayName": "Muse CLI Chat",
   "description": "Unofficial VS Code / Cursor sidebar for Meta Muse Code. Wraps the muse CLI (muse exec --json); not affiliated with Meta.",
-	"version": "0.1.19",
+	"version": "0.2.0",
   "publisher": "codemarc",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -50,9 +50,18 @@
     "viewsContainers": {
       "activitybar": [
         {
+          "id": "muse-activity",
+          "title": "Muse CLI Chat",
+          "icon": "media/muse.svg",
+          "when": "muse:doesNotSupportSecondarySidebar"
+        }
+      ],
+      "secondarySidebar": [
+        {
           "id": "muse",
           "title": "Muse CLI Chat",
-          "icon": "media/muse.svg"
+          "icon": "media/muse.svg",
+          "when": "!muse:doesNotSupportSecondarySidebar"
         }
       ]
     },
@@ -61,7 +70,16 @@
         {
           "type": "webview",
           "id": "muse.chatView",
-          "name": "Muse"
+          "name": "Muse",
+          "when": "!muse:doesNotSupportSecondarySidebar"
+        }
+      ],
+      "muse-activity": [
+        {
+          "type": "webview",
+          "id": "muse.chatViewActivity",
+          "name": "Muse",
+          "when": "muse:doesNotSupportSecondarySidebar"
         }
       ]
     },
@@ -70,6 +88,21 @@
         "command": "muse.openChat",
         "title": "Muse CLI Chat: Open Chat",
         "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "muse.openPanel",
+        "title": "Muse CLI Chat: Open in Editor Panel",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "muse.openSecondarySidebar",
+        "title": "Muse CLI Chat: Open in Secondary Sidebar",
+        "icon": "$(layout-sidebar-right)"
+      },
+      {
+        "command": "muse.openNewWindow",
+        "title": "Muse CLI Chat: Open in New Window",
+        "icon": "$(window)"
       },
       {
         "command": "muse.sendSelection",
@@ -141,65 +174,76 @@
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "muse.openPanel"
+        },
+        {
+          "command": "muse.openSecondarySidebar"
+        },
+        {
+          "command": "muse.openNewWindow"
+        }
+      ],
       "view/title": [
         {
           "command": "muse.selectWorkspaceFolder",
-          "when": "view == muse.chatView && workspaceFolderCount > 1",
+          "when": "view =~ /muse\\.chatView/ && workspaceFolderCount > 1",
           "group": "navigation@0"
         },
         {
           "command": "muse.pickSession",
-          "when": "view == muse.chatView",
+          "when": "view =~ /muse\\.chatView/",
           "group": "navigation@1"
         },
         {
           "command": "muse.cleanupSessions",
-          "when": "view == muse.chatView",
+          "when": "view =~ /muse\\.chatView/",
           "group": "navigation@2"
         },
         {
           "command": "muse.openInCanvas",
-          "when": "view == muse.chatView",
+          "when": "view =~ /muse\\.chatView/",
           "group": "navigation@3"
         },
         {
           "command": "muse.expandAll",
-          "when": "view == muse.chatView",
+          "when": "view =~ /muse\\.chatView/",
           "group": "navigation@4"
         },
         {
           "command": "muse.collapseAll",
-          "when": "view == muse.chatView",
+          "when": "view =~ /muse\\.chatView/",
           "group": "navigation@5"
         },
         {
           "command": "muse.newSession",
-          "when": "view == muse.chatView",
+          "when": "view =~ /muse\\.chatView/",
           "group": "navigation"
         },
         {
           "command": "muse.stop",
-          "when": "view == muse.chatView",
+          "when": "view =~ /muse\\.chatView/",
           "group": "navigation"
         },
         {
           "command": "muse.openInteractiveTerminal",
-          "when": "view == muse.chatView",
+          "when": "view =~ /muse\\.chatView/",
           "group": "navigation"
         },
         {
           "command": "muse.openMuseAi",
-          "when": "view == muse.chatView",
+          "when": "view =~ /muse\\.chatView/",
           "group": "navigation"
         },
         {
           "command": "muse.openWebsite",
-          "when": "view == muse.chatView",
+          "when": "view =~ /muse\\.chatView/",
           "group": "navigation"
         },
         {
           "command": "muse.openBilling",
-          "when": "view == muse.chatView",
+          "when": "view =~ /muse\\.chatView/",
           "group": "navigation"
         }
       ],
@@ -219,6 +263,39 @@
           "default": "muse",
           "scope": "application",
           "description": "Path to the Muse Code binary. Use \"muse\" (PATH) or an absolute path to the binary file. Application-scoped so workspaces cannot override it."
+        },
+        "muse.preferredLocation": {
+          "type": "string",
+          "enum": [
+            "secondarySidebar",
+            "panel",
+            "terminal"
+          ],
+          "enumDescriptions": [
+            "Open the native chat in the secondary sidebar when supported, otherwise the activity-bar sidebar.",
+            "Open the native chat in an editor panel.",
+            "Open the Muse interactive terminal."
+          ],
+          "default": "secondarySidebar",
+          "description": "Where Muse CLI Chat opens when using the Open Chat command."
+        },
+        "muse.useTerminal": {
+          "type": "boolean",
+          "default": false,
+          "description": "Open Muse in an integrated terminal instead of the native chat when Open Chat is used. Legacy alias for muse.executionMode = interactive."
+        },
+        "muse.executionMode": {
+          "type": "string",
+          "enum": [
+            "headless",
+            "interactive"
+          ],
+          "enumDescriptions": [
+            "Native chat runs muse exec --json. Interactive approvals are unavailable.",
+            "Open Chat uses the integrated Muse terminal so Muse can ask for approvals and other interactive input."
+          ],
+          "default": "headless",
+          "description": "How Muse CLI Chat executes. Headless is the default JSONL native-chat path. Interactive opens the Muse terminal. MSP is not exposed yet."
         },
         "muse.model": {
           "type": "string",

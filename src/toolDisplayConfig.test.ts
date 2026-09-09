@@ -53,11 +53,11 @@ describe("muse.toolDisplay configuration", () => {
       expect.arrayContaining([
         expect.objectContaining({
           command: "muse.expandAll",
-          when: "view == muse.chatView",
+          when: "view =~ /muse\\.chatView/",
         }),
         expect.objectContaining({
           command: "muse.collapseAll",
-          when: "view == muse.chatView",
+          when: "view =~ /muse\\.chatView/",
         }),
       ]),
     );
@@ -92,7 +92,7 @@ describe("muse.toolDisplay configuration", () => {
       expect.arrayContaining([
         expect.objectContaining({
           command: "muse.openMuseAi",
-          when: "view == muse.chatView",
+          when: "view =~ /muse\\.chatView/",
         }),
       ]),
     );
@@ -106,5 +106,42 @@ describe("muse.toolDisplay configuration", () => {
     expect(extension).toContain(
       "https://developer.meta.com/ai/products/muse-code/",
     );
+  });
+
+  test("contributes the aligned chat placement options", () => {
+    const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
+    const location = pkg.contributes.configuration.properties["muse.preferredLocation"];
+    const commands = pkg.contributes.commands.map((c: { command: string }) => c.command);
+
+    expect(location.default).toBe("secondarySidebar");
+    expect(location.enum).toEqual(["secondarySidebar", "panel", "terminal"]);
+    expect(commands).toEqual(expect.arrayContaining([
+      "muse.openPanel",
+      "muse.openSecondarySidebar",
+      "muse.openNewWindow",
+    ]));
+  });
+
+  test("wires file mentions and post-turn git review", () => {
+    const provider = readFileSync(resolve("src/chatViewProvider.ts"), "utf8");
+    expect(provider).toContain('"mentionQuery"');
+    expect(provider).toContain("handleMentionQuery");
+    expect(provider).toContain("publishTurnReview");
+    expect(provider).toContain("reviewSince");
+    expect(provider).toContain('id="mentions"');
+    expect(provider).toContain("Changed files");
+  });
+
+  test("contributes and forwards the explicit execution mode", () => {
+    const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
+    const setting =
+      pkg.contributes.configuration.properties["muse.executionMode"];
+    expect(setting.default).toBe("headless");
+    expect(setting.enum).toEqual(["headless", "interactive"]);
+
+    const provider = readFileSync(resolve("src/chatViewProvider.ts"), "utf8");
+    const extension = readFileSync(resolve("src/extension.ts"), "utf8");
+    expect(provider).toContain('"executionMode"');
+    expect(extension).toContain('"muse.executionMode"');
   });
 });

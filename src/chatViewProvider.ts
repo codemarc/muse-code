@@ -12,6 +12,17 @@ import {
 } from "./museCli";
 import { loadSessionTranscript } from "./museExport";
 import {
+  filterMentionCandidates,
+  mentionSearchGlob,
+  type MentionCandidate,
+} from "./fileMentions";
+import { parsePorcelain, readGitSnapshot, reviewSince, runGit } from "./gitReview";
+import {
+  executionModeDescription,
+  EXECUTION_MODE_LABELS,
+  normalizeExecutionMode,
+} from "./executionMode";
+import {
   MUSE_AI_URL,
   selectHandoffTranscript,
   transcriptToMarkdown,
@@ -34,7 +45,7 @@ import type { WorkspaceFolderStore } from "./workspaceFolder";
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "muse.chatView";
 
-  private view?: vscode.WebviewView;
+  private readonly webviews = new Set<vscode.Webview>();
   private run?: MuseRunHandle;
   private readonly status: vscode.StatusBarItem;
   private liveTranscript: TranscriptItem[] = [];
@@ -58,14 +69,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     _context: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken,
   ): void {
-    this.view = webviewView;
-    webviewView.webview.options = {
+    const dispose = this.attachWebview(webviewView.webview);
+    webviewView.onDidDispose(dispose);
+  }
+
+  /** Attach a panel or view to the shared chat session. */
+  attachWebview(webview: vscode.Webview): () => void {
+    this.webviews.add(webview);
+    webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, "media")],
     };
-    webviewView.webview.html = this.getHtml(webviewView.webview);
+    webview.html = this.getHtml(webview);
 
-    webviewView.webview.onDidReceiveMessage(async (msg) => {
+    const messageSubscription = webview.onDidReceiveMessage(async (msg) => {
       switch (msg?.type) {
         case "ready":
           this.post({
@@ -115,8 +132,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case "openCanvasFile":
           await this.openCanvasFile(String(msg.href ?? ""));
           break;
+        case "mentionQuery":
+          await this.handleMentionQuery(
+            String(msg.query ?? ""),
+            Number(msg.requestId ?? 0),
+          );
+          break;
       }
     });
+
+    return () => {
+      messageSubscription.dispose();
+      this.webviews.delete(webview);
+    };
   }
 
   private openCanvas(payload: CanvasPayload | undefined): void {
@@ -130,6 +158,93 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.canvasPanel.show(payload);
   }
 
+  private async handleMentionQuery(
+    query: string,
+    requestId: number,
+  ): Promise<void> {
+    const folder = this.folders.getFolder();
+    if (!folder) {
+      this.post({ type: "mentionResults", requestId, items: [] });
+      return;
+    }
+
+    const items: MentionCandidate[] = [];
+    for (const doc of vscode.workspace.textDocuments) {
+      if (doc.uri.scheme !== "file" || doc.isUntitled) {
+        continue;
+      }
+      const rel = vscode.workspace.asRelativePath(doc.uri, false);
+      if (!rel || rel === doc.uri.fsPath) {
+        continue;
+      }
+      items.push({ path: rel.replace(/\\/g, "/"), source: "open" });
+    }
+
+    const git = await runGit(folder.fsPath, [
+      "status",
+      "--porcelain",
+      "--untracked-files=normal",
+    ]);
+    if (git.ok) {
+      for (const file of parsePorcelain(git.stdout)) {
+        items.push({ path: file.path.replace(/\\/g, "/"), source: "git" });
+      }
+    }
+
+    const glob = mentionSearchGlob(query);
+    if (glob) {
+      try {
+        const hits = await vscode.workspace.findFiles(
+          new vscode.RelativePattern(folder.uri, glob),
+          new vscode.RelativePattern(
+            folder.uri,
+            "{**/node_modules,**/dist,**/.git}/**",
+          ),
+          40,
+        );
+        for (const uri of hits) {
+          const rel = vscode.workspace.asRelativePath(uri, false);
+          if (!rel || rel === uri.fsPath) {
+            continue;
+          }
+          items.push({ path: rel.replace(/\\/g, "/"), source: "search" });
+        }
+      } catch {
+        // ignore bad globs
+      }
+    }
+
+    this.post({
+      type: "mentionResults",
+      requestId,
+      items: filterMentionCandidates(query, items, 12),
+    });
+  }
+
+  private async publishTurnReview(
+    workspacePath: string,
+    before: Awaited<ReturnType<typeof readGitSnapshot>>,
+  ): Promise<void> {
+    try {
+      const review = await reviewSince(workspacePath, before);
+      if (!review.markdown) {
+        return;
+      }
+      this.post({
+        type: "changes",
+        files: review.files,
+        markdown: review.markdown,
+      });
+      this.canvasPanel.show({
+        name: "Changed files",
+        resultView: review.markdown,
+        resultRaw: review.diff || review.markdown,
+      });
+    } catch {
+      // Review is best-effort and must not fail the chat run.
+    }
+  }
+
   /** Chip clicks and chat links both land in the main editor area. */
   private async openCanvasFile(href: string): Promise<void> {
     await openLinkInMainView(href, {
@@ -140,6 +255,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   postConfig(): void {
     const cfg = vscode.workspace.getConfiguration("muse");
+    const executionMode = normalizeExecutionMode(
+      cfg.get<string>("executionMode", "headless"),
+    );
     this.post({
       type: "config",
       toolOutputFormat: cfg.get<"readable" | "json">(
@@ -151,6 +269,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         "compact",
       ),
       chatFormat: cfg.get<"markdown" | "plain">("chatFormat", "markdown"),
+      executionMode,
+      executionModeLabel: EXECUTION_MODE_LABELS[executionMode],
+      executionModeDescription: executionModeDescription(executionMode),
     });
   }
 
@@ -187,7 +308,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   reveal(): void {
-    void vscode.commands.executeCommand("muse.chatView.focus");
+    const [major, minor] = vscode.version.split(".").map((value) => Number(value));
+    const viewId = major === 1 && minor < 97
+      ? "muse.chatViewActivity"
+      : ChatViewProvider.viewType;
+    void vscode.commands.executeCommand(`${viewId}.focus`);
+  }
+
+  async openPanel(column = vscode.ViewColumn.Beside): Promise<void> {
+    const panel = vscode.window.createWebviewPanel(
+      "muse.chatPanel",
+      "Muse CLI Chat",
+      column,
+      { enableScripts: true, retainContextWhenHidden: true },
+    );
+    const dispose = this.attachWebview(panel.webview);
+    panel.onDidDispose(dispose);
   }
 
   newSession(): void {
@@ -447,6 +583,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     const workspacePath = root.path;
     const sessionId = this.sessions.getSessionId();
+    const snapshot = await readGitSnapshot(workspacePath);
 
     this.liveTranscript = appendLiveUiEvent(this.liveTranscript, {
       kind: "user",
@@ -493,6 +630,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
           this.sessions.saveTranscript(sessionId, this.liveTranscript);
           void this.hydrateTranscript({ paintCacheFirst: false });
+          void this.publishTurnReview(workspacePath, snapshot);
         },
       });
     } catch (err) {
@@ -816,7 +954,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private post(message: unknown): void {
-    void this.view?.webview.postMessage(message);
+    for (const webview of this.webviews) {
+      void webview.postMessage(message);
+    }
   }
 
   private enrichItemsForWebview(items: TranscriptItem[]): unknown[] {
@@ -901,9 +1041,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         <!-- <button type="button" id="muse-ai" class="muse-ai-link" title="Copy this session and open muse.ai">muse.ai</button> -->
       </div>
     </div>
-    <div class="meta">
-      <div id="folder" class="folder"></div>
-      <button type="button" id="session-btn" class="session-btn" title="Resume or start a Muse session">
+      <div class="meta">
+        <div id="folder" class="folder"></div>
+        <div id="execution-mode" class="execution-mode" title=""></div>
+        <button type="button" id="session-btn" class="session-btn" title="Resume or start a Muse session">
         <span id="session" class="session">————</span>
       </button>
     </div>
@@ -919,13 +1060,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   </div>
   <main id="transcript" class="transcript" aria-live="polite"></main>
   <footer class="composer">
-    <textarea id="input" rows="3" placeholder="Ask Muse to plan, edit, or validate… (⌘Enter to send)"></textarea>
+    <div id="mentions" class="mentions" hidden role="listbox" aria-label="File mentions"></div>
+    <textarea id="input" rows="3" placeholder="Ask Muse… (@ file, ⌘Enter to send)"></textarea>
     <div class="actions">
       <button type="button" id="history" class="secondary">History</button>
       <button type="button" id="stop" class="secondary" disabled>Stop</button>
       <button type="button" id="send" class="primary" title="Send (⌘Enter)">Send</button>
     </div>
-    <p class="hint">History resumes Muse’s --session-id (export-backed). First send may ask to enable disable-approval. Not affiliated with Meta.</p>
+    <p class="hint">Type @ to mention a file. After a turn, changed-file diffs open in canvas. First send may ask to enable disable-approval. Not affiliated with Meta.</p>
   </footer>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>

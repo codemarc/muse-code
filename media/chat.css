@@ -113,6 +113,13 @@ body {
   min-width: 0;
 }
 
+.execution-mode {
+  font-size: 10px;
+  opacity: 0.72;
+  white-space: nowrap;
+  cursor: help;
+}
+
 .folder,
 .session {
   font-size: 11px;
@@ -459,6 +466,44 @@ textarea {
 
 textarea:focus {
   outline: 1px solid var(--vscode-focusBorder);
+}
+
+.mentions {
+  display: flex;
+  flex-direction: column;
+  max-height: 160px;
+  overflow: auto;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.45));
+  border-radius: 6px;
+  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+}
+
+.mentions[hidden] {
+  display: none;
+}
+
+.mention-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+}
+
+.mention-item.active,
+.mention-item:hover {
+  background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.12));
+}
+
+.msg.changes {
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.45));
+}
+
+.changes-actions {
+  margin-top: 8px;
 }
 
 .actions {

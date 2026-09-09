@@ -4,8 +4,18 @@ import { ChatViewProvider } from "./chatViewProvider";
 import { maybeWarnYolo } from "./safety";
 import { SessionStore } from "./sessionStore";
 import { WorkspaceFolderStore } from "./workspaceFolder";
+import { normalizeExecutionMode } from "./executionMode";
+
+const OPEN_ON_ACTIVATE_KEY = "muse.openOnActivate";
 
 export function activate(context: vscode.ExtensionContext): void {
+  const [major, minor] = vscode.version.split(".").map((value) => Number(value));
+  void vscode.commands.executeCommand(
+    "setContext",
+    "muse:doesNotSupportSecondarySidebar",
+    major === 1 && minor < 97,
+  );
+
   const sessions = new SessionStore(context);
   const folders = new WorkspaceFolderStore(context);
   const canvasPanel = new CanvasPanel(context.extensionUri, folders);
@@ -16,13 +26,49 @@ export function activate(context: vscode.ExtensionContext): void {
     canvasPanel,
   );
 
+  const openPreferred = async (): Promise<void> => {
+    const cfg = vscode.workspace.getConfiguration("muse");
+    if (
+      cfg.get<boolean>("useTerminal", false) ||
+      normalizeExecutionMode(cfg.get<string>("executionMode", "headless")) ===
+        "interactive"
+    ) {
+      await provider.openInteractiveTerminal();
+      return;
+    }
+    const location = cfg.get<string>("preferredLocation", "secondarySidebar");
+    if (location === "terminal") {
+      await provider.openInteractiveTerminal();
+      return;
+    }
+    if (location === "panel") {
+      await provider.openPanel();
+      return;
+    }
+    provider.reveal();
+  };
+
   context.subscriptions.push(
     provider,
     canvasPanel,
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, provider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
-    vscode.commands.registerCommand("muse.openChat", () => provider.reveal()),
+    vscode.window.registerWebviewViewProvider("muse.chatViewActivity", provider, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
+    vscode.commands.registerCommand("muse.openChat", () => openPreferred()),
+    vscode.commands.registerCommand("muse.openPanel", () => provider.openPanel()),
+    vscode.commands.registerCommand("muse.openSecondarySidebar", () => provider.reveal()),
+    vscode.commands.registerCommand("muse.openNewWindow", async () => {
+      const folder = folders.getFolder() ?? vscode.workspace.workspaceFolders?.[0];
+      if (!folder) {
+        void vscode.window.showErrorMessage("Open a folder before opening Muse in a new window.");
+        return;
+      }
+      await context.globalState.update(OPEN_ON_ACTIVATE_KEY, folder.uri.fsPath);
+      await vscode.commands.executeCommand("vscode.openFolder", folder.uri, { forceNewWindow: true });
+    }),
     vscode.commands.registerCommand("muse.sendSelection", () =>
       provider.sendSelection(),
     ),
@@ -70,6 +116,7 @@ export function activate(context: vscode.ExtensionContext): void {
         e.affectsConfiguration("muse.toolOutputFormat") ||
         e.affectsConfiguration("muse.toolDisplay") ||
         e.affectsConfiguration("muse.chatFormat")
+        || e.affectsConfiguration("muse.executionMode")
       ) {
         provider.postConfig();
         canvasPanel.postConfig();
@@ -83,6 +130,12 @@ export function activate(context: vscode.ExtensionContext): void {
       void provider.refreshSetup();
     }),
   );
+
+  const pending = context.globalState.get<string>(OPEN_ON_ACTIVATE_KEY);
+  if (pending && vscode.workspace.workspaceFolders?.some((f) => f.uri.fsPath === pending)) {
+    void context.globalState.update(OPEN_ON_ACTIVATE_KEY, undefined);
+    void openPreferred();
+  }
 
   void maybeWarnYolo(context);
 }
