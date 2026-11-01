@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.1 - 2026-11-01
+
+### Added
+
+- **`toolDisplay: minimal`:** dense static one-line tool rows with no chevron or success badge for long 50+ tool runs. Labels prefer descriptions, tool names, and commands over raw output; runs with nothing sensible to show print nothing and collapse to a `working…` pulse every five tools. Failed calls keep the red badge and stay expandable
+- **Default shortcut for the editor panel:** `Muse CLI Chat: Open in Editor Panel` is now on `⌘⇧R` (macOS) / `Ctrl+Shift+R` (Linux). The chord is unused by VS Code/Cursor defaults and verified against installed extensions; rebind it in Keyboard Shortcuts if it ever collides
+- **Sidebar toolbar button for the editor panel:** one click pops the chat out into an editor tab, next to the History/New/Stop actions
+- **Context attachments:** `@` picks and the new **+ Attach** menu add Cursor-style context chips (file contents, current file, open editors, Problems/diagnostics, terminal output). Chips expand inline into the `muse exec` prompt so the model sees contents without a re-read round trip; the sidebar keeps the compact prompt with chips
+- Terminal output is captured via shell integration after activation (VS Code exposes no buffer-read API for output that predates the tap)
+
+### Changed
+
+- `@` file picks no longer insert a bare `` `path` `` into the prompt text; they attach the file with contents as a removable chip
+- Chat view lives in the activity bar on every host. Cursor rejects `secondarySidebar` view containers unconditionally (startup error + warning, views dumped into Explorer), so the 0.2.0 right-side placement is gone rather than shipping known-broken in Cursor
+- Header folder indicator only shows with multiple workspace folders open (single-root already names the folder in the window title); the duplicate `Muse: Open Editor Tab` palette entry is hidden since it does the same thing as `Muse CLI Chat: Open in Editor Panel`
+
+### Fixed
+
+- Status bar item (`Muse <session> · <mode>`) now shows at startup like other agent extensions instead of only after first opening chat. The extension activates on `onStartupFinished`; activation stays cheap (no CLI spawn) and untrusted/virtual workspace guards still apply
+
 ## [0.2.0] - 2026-09-09
 
 ### Added
