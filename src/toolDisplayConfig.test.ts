@@ -3,14 +3,15 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 describe("muse.toolDisplay configuration", () => {
-  test("contributes Compact, Balanced, and Detailed with Compact as default", () => {
+  test("contributes Minimal, Compact, Balanced, and Detailed with Compact as default", () => {
     const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
     const setting =
       pkg.contributes.configuration.properties["muse.toolDisplay"];
 
     expect(setting).toBeDefined();
     expect(setting.default).toBe("compact");
-    expect(setting.enum).toEqual(["compact", "balanced", "detailed"]);
+    expect(setting.enum).toEqual(["minimal", "compact", "balanced", "detailed"]);
+    expect(setting.enumDescriptions[0]).toContain("working pulse");
   });
 
   test("forwards the setting and reacts when it changes", () => {
@@ -122,6 +123,38 @@ describe("muse.toolDisplay configuration", () => {
     ]));
   });
 
+  test("contributes views only to containers that exist in every host", () => {
+    const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
+    // Cursor rejects secondarySidebar containers unconditionally (verified in
+    // its workbench bundle): error + warning, with orphaned views dumped into
+    // Explorer. No when-clause or API call can suppress that.
+    expect(pkg.contributes.viewsContainers.secondarySidebar).toBeUndefined();
+    const containerIds = new Set(
+      Object.values(pkg.contributes.viewsContainers).flatMap((list) =>
+        (list as Array<{ id: string }>).map((c) => c.id),
+      ),
+    );
+    for (const [containerId, views] of Object.entries(pkg.contributes.views)) {
+      expect(containerIds.has(containerId)).toBe(true);
+      for (const view of views as Array<{ id: string }>) {
+        expect(view.id).toBeDefined();
+      }
+    }
+    const views = pkg.contributes.views["muse-activity"] as Array<{
+      id: string;
+    }>;
+    expect(views.map((view) => view.id)).toEqual(["muse.chatView"]);
+
+    const extension = readFileSync(resolve("src/extension.ts"), "utf8");
+    const provider = readFileSync(resolve("src/chatViewProvider.ts"), "utf8");
+    expect(extension).toContain(
+      "registerWebviewViewProvider(ChatViewProvider.viewType",
+    );
+    expect(extension).not.toContain("chatViewActivity");
+    expect(provider).not.toContain("chatViewActivity");
+    expect(provider).not.toContain("doesNotSupportSecondarySidebar");
+  });
+
   test("wires file mentions and post-turn git review", () => {
     const provider = readFileSync(resolve("src/chatViewProvider.ts"), "utf8");
     expect(provider).toContain('"mentionQuery"');
@@ -130,6 +163,39 @@ describe("muse.toolDisplay configuration", () => {
     expect(provider).toContain("reviewSince");
     expect(provider).toContain('id="mentions"');
     expect(provider).toContain("Changed files");
+  });
+
+  test("activates at startup so the status bar shows without opening chat", () => {
+    const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
+    expect(pkg.activationEvents).toEqual(
+      expect.arrayContaining(["onStartupFinished"]),
+    );
+
+    const provider = readFileSync(resolve("src/chatViewProvider.ts"), "utf8");
+    expect(provider).toContain("createStatusBarItem(");
+    expect(provider).toContain("this.refreshStatusBar();");
+  });
+
+  test("contributes a default shortcut for opening the editor panel", () => {
+    const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
+    const keybindings = (pkg.contributes.keybindings ?? []) as Array<{
+      command: string;
+      key?: string;
+      mac?: string;
+      when?: string;
+    }>;
+
+    // No `when`: a global launcher. The chord is unused by VS Code/Cursor
+    // defaults and by every installed extension's manifest.
+    expect(keybindings).toEqual(
+      expect.arrayContaining([
+        {
+          command: "muse.openPanel",
+          key: "ctrl+shift+r",
+          mac: "cmd+shift+r",
+        },
+      ]),
+    );
   });
 
   test("contributes and forwards the explicit execution mode", () => {

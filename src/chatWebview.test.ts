@@ -66,6 +66,7 @@ class FakeElement {
   }
 
   scrollTop = 0;
+  blurred = false;
 
   appendChild(child: FakeElement): FakeElement {
     child.parent = this;
@@ -93,6 +94,10 @@ class FakeElement {
   }
 
   focus(): void {}
+
+  blur(): void {
+    this.blurred = true;
+  }
 
   querySelectorAll(selector: string): FakeElement[] {
     const className = selector.startsWith(".") ? selector.slice(1) : "";
@@ -142,6 +147,7 @@ function loadChat(opts?: { platform?: string }) {
     "session",
     "session-btn",
     "folder",
+    "execution-mode",
     "setup",
     "setup-msg",
     "setup-install",
@@ -150,6 +156,18 @@ function loadChat(opts?: { platform?: string }) {
     "muse-ai",
     "pick-folder",
     "mentions",
+    "attachments",
+    "attach",
+    "attach-menu",
+    "toolbar-history",
+    "toolbar-new",
+    "mode-banner",
+    "mode-banner-text",
+    "mode-banner-dismiss",
+    "focus-hint",
+    "mode-pill",
+    "model-pill",
+    "effort-pill",
   ];
   const elements = new Map(ids.map((id) => [id, new FakeElement()]));
   let onMessage: Listener | undefined;
@@ -187,6 +205,19 @@ function loadChat(opts?: { platform?: string }) {
     input,
     sendBtn: elements.get("send")!,
     mentions: elements.get("mentions")!,
+    attachments: elements.get("attachments")!,
+    attachBtn: elements.get("attach")!,
+    attachMenu: elements.get("attach-menu")!,
+    toolbarHistory: elements.get("toolbar-history")!,
+    toolbarNew: elements.get("toolbar-new")!,
+    modeBanner: elements.get("mode-banner")!,
+    modeBannerText: elements.get("mode-banner-text")!,
+    modeBannerDismiss: elements.get("mode-banner-dismiss")!,
+    focusHint: elements.get("focus-hint")!,
+    modePill: elements.get("mode-pill")!,
+    modelPill: elements.get("model-pill")!,
+    effortPill: elements.get("effort-pill")!,
+    folder: elements.get("folder")!,
     posted,
     send(data: unknown) {
       if (!onMessage) throw new Error("chat message listener was not installed");
@@ -215,6 +246,17 @@ function tool(overrides: Record<string, unknown> = {}) {
     ],
     ...overrides,
   };
+}
+
+function silentTool(overrides: Record<string, unknown> = {}) {
+  return tool({
+    name: "CALL_01A023F",
+    resultView: '<READ-SKILL-RESULT NAME="SUPABASE" STATUS="OK" />',
+    resultRaw: '{"status":"ok"}',
+    execMeta: { exitCode: 0 },
+    files: [],
+    ...overrides,
+  });
 }
 
 describe("chat tool-card disclosure", () => {
@@ -470,6 +512,148 @@ describe("chat tool-card disclosure", () => {
   });
 });
 
+describe("chat minimal tool display", () => {
+  test("minimal renders dense labeled rows that do not expand", () => {
+    const chat = loadChat();
+    chat.send({ type: "config", toolDisplay: "minimal" });
+    chat.send(tool({ execMeta: { description: "Check CLI", exitCode: 0 } }));
+
+    expect(chat.transcript.children.length).toBe(1);
+    const row = chat.transcript.children[0];
+    expect(row.hasClass("tool-minimal")).toBe(true);
+    expect(row.querySelector(".tool-summary")!.textContent).toBe("Check CLI");
+    expect(row.querySelector(".tool-exit-ok")!.hidden).toBe(true);
+    expect(row.querySelector(".tool-chevron")!.hidden).toBe(true);
+
+    row.querySelector(".tool-disclosure")!.click();
+    expect(row.querySelector(".tool-details")!.hidden).toBe(true);
+    expect(row.querySelector(".tool-disclosure")!.getAttribute("aria-expanded")).toBe(
+      "false",
+    );
+
+    chat.send({ type: "expandAll" });
+    expect(row.querySelector(".tool-details")!.hidden).toBe(true);
+  });
+
+  test("silent runs collapse to a working pulse every five tools", () => {
+    const chat = loadChat();
+    chat.send({ type: "config", toolDisplay: "minimal" });
+
+    for (let i = 0; i < 4; i += 1) {
+      chat.send(silentTool());
+    }
+    expect(chat.transcript.children.length).toBe(0);
+
+    chat.send(silentTool());
+    expect(chat.transcript.children.length).toBe(1);
+    const pulse = chat.transcript.children[0];
+    expect(pulse.hasClass("heartbeat")).toBe(true);
+    expect(pulse.textContent).toContain("working…");
+
+    for (let i = 0; i < 5; i += 1) {
+      chat.send(silentTool());
+    }
+    expect(chat.transcript.children.length).toBe(2);
+  });
+
+  test("labeled rows and messages reset the silent run", () => {
+    const chat = loadChat();
+    chat.send({ type: "config", toolDisplay: "minimal" });
+
+    for (let i = 0; i < 4; i += 1) {
+      chat.send(silentTool());
+    }
+    chat.send(tool({ execMeta: { description: "Labeled", exitCode: 0 } }));
+    for (let i = 0; i < 4; i += 1) {
+      chat.send(silentTool());
+    }
+    expect(chat.transcript.children.length).toBe(1);
+
+    chat.send({ type: "assistant_final", text: "done" });
+    for (let i = 0; i < 4; i += 1) {
+      chat.send(silentTool());
+    }
+    expect(chat.transcript.children.length).toBe(2);
+  });
+
+  test("minimal failures keep a badge and stay expandable", () => {
+    const chat = loadChat();
+    chat.send({ type: "config", toolDisplay: "minimal" });
+    chat.send(
+      tool({
+        resultView: "<opaque>blob</opaque>",
+        resultRaw: '{"a":1}',
+        execMeta: { description: "Run tests", exitCode: 1 },
+      }),
+    );
+
+    const row = chat.transcript.children[0];
+    expect(row.querySelector(".tool-summary")!.textContent).toBe("Run tests");
+    expect(row.querySelector(".tool-exit-fail")!.hidden).toBe(false);
+    expect(row.querySelector(".tool-exit-fail")!.textContent).toBe("exit 1");
+    expect(row.querySelector(".tool-chevron")!.hidden).toBe(false);
+
+    row.querySelector(".tool-disclosure")!.click();
+    expect(row.querySelector(".tool-details")!.hidden).toBe(false);
+  });
+
+  test("silent-shaped failures still render with a fallback label", () => {
+    const chat = loadChat();
+    chat.send({ type: "config", toolDisplay: "minimal" });
+    chat.send(silentTool({ execMeta: { exitCode: 1 } }));
+
+    expect(chat.transcript.children.length).toBe(1);
+    const label = chat.transcript.children[0].querySelector(".tool-summary")!;
+    expect(label.textContent.length).toBeGreaterThan(0);
+  });
+
+  test("minimal prefers names and commands over raw content lines", () => {
+    const chat = loadChat();
+    chat.send({ type: "config", toolDisplay: "minimal" });
+    chat.send(
+      tool({ name: "search_files", resultView: "<xml>blob</xml>", execMeta: {} }),
+    );
+    chat.send(
+      tool({
+        resultView: "<xml />",
+        resultRaw: "{}",
+        execMeta: { command: "git status" },
+      }),
+    );
+    chat.send(tool({ resultView: "Readable first line", execMeta: {} }));
+
+    const labels = chat.transcript.children.map(
+      (row) => row.querySelector(".tool-summary")!.textContent,
+    );
+    expect(labels).toEqual(["search files", "$ git status", "Readable first line"]);
+  });
+
+  test("switching modes densifies, hides, and restores cards", () => {
+    const chat = loadChat();
+    chat.send({ type: "config", toolDisplay: "compact" });
+    chat.send(tool({ execMeta: { description: "Labeled", exitCode: 0 } }));
+    chat.send(silentTool());
+
+    const labeled = chat.transcript.children[0];
+    const silent = chat.transcript.children[1];
+    expect(labeled.querySelector(".tool-exit-ok")!.hidden).toBe(false);
+
+    chat.send({ type: "config", toolDisplay: "minimal" });
+    expect(labeled.hasClass("tool-minimal")).toBe(true);
+    expect(labeled.querySelector(".tool-exit-ok")!.hidden).toBe(true);
+    expect(labeled.querySelector(".tool-summary")!.textContent).toBe("Labeled");
+    expect(silent.hidden).toBe(true);
+
+    chat.send({ type: "config", toolDisplay: "compact" });
+    expect(labeled.hasClass("tool-minimal")).toBe(false);
+    expect(labeled.querySelector(".tool-exit-ok")!.hidden).toBe(false);
+    expect(silent.hidden).toBe(false);
+    expect(silent.querySelector(".tool-summary")!.textContent).toContain(
+      "READ-SKILL-RESULT",
+    );
+  });
+});
+
 describe("composer submit key", () => {
   function submitPosts(chat: { posted: unknown[] }) {
     return chat.posted.filter(
@@ -493,7 +677,9 @@ describe("composer submit key", () => {
       key: "Enter",
       metaKey: true,
     });
-    expect(submitPosts(chat)).toEqual([{ type: "submit", prompt: "hello muse" }]);
+    expect(submitPosts(chat)).toEqual([
+      { type: "submit", prompt: "hello muse", attachments: [] },
+    ]);
     expect(chat.input.value).toBe("");
   });
 
@@ -502,7 +688,9 @@ describe("composer submit key", () => {
     chat.ready();
     chat.input.value = "ping";
     chat.input.dispatch("keydown", { key: "Enter", ctrlKey: true });
-    expect(submitPosts(chat)).toEqual([{ type: "submit", prompt: "ping" }]);
+    expect(submitPosts(chat)).toEqual([
+      { type: "submit", prompt: "ping", attachments: [] },
+    ]);
   });
 
   test("placeholder names the submit chord", () => {
@@ -536,7 +724,7 @@ describe("composer file mentions", () => {
     ]);
   });
 
-  test("picking a result inserts a backticked path", () => {
+  test("picking a result adds a context chip and clears the token", () => {
     const chat = loadChat();
     chat.input.value = "see @ch";
     chat.input.selectionStart = 7;
@@ -548,8 +736,80 @@ describe("composer file mentions", () => {
     });
     expect(chat.mentions.hidden).toBe(false);
     chat.mentions.children[0]!.dispatch("mousedown");
-    expect(chat.input.value).toBe("see `src/chat.js` ");
+    expect(chat.input.value).toBe("see ");
     expect(chat.mentions.hidden).toBe(true);
+    expect(chat.attachments.hidden).toBe(false);
+    expect(chat.attachments.textContent).toContain("src/chat.js");
+  });
+
+  test("submit sends chips as attachments and clears them", () => {
+    const chat = loadChat();
+    chat.ready();
+    chat.input.value = "see @ch";
+    chat.input.selectionStart = 7;
+    chat.input.dispatch("input");
+    chat.send({
+      type: "mentionResults",
+      requestId: 1,
+      items: [{ path: "src/chat.js", source: "open" }],
+    });
+    chat.mentions.children[0]!.dispatch("mousedown");
+    chat.input.value = "see explain this";
+    chat.input.dispatch("keydown", { key: "Enter", metaKey: true });
+    const submits = chat.posted.filter(
+      (msg) =>
+        Boolean(msg) &&
+        typeof msg === "object" &&
+        (msg as { type?: string }).type === "submit",
+    );
+    expect(submits).toEqual([
+      {
+        type: "submit",
+        prompt: "see explain this",
+        attachments: [{ kind: "file", path: "src/chat.js" }],
+      },
+    ]);
+    expect(chat.attachments.hidden).toBe(true);
+    expect(chat.input.value).toBe("");
+  });
+
+  test("picking the same file twice keeps one chip", () => {
+    const chat = loadChat();
+    for (const query of ["see @ch", "and @ch"]) {
+      chat.input.value = query;
+      chat.input.selectionStart = query.length;
+      chat.input.dispatch("input");
+    }
+    chat.send({
+      type: "mentionResults",
+      requestId: 2,
+      items: [{ path: "src/chat.js", source: "open" }],
+    });
+    chat.mentions.children[0]!.dispatch("mousedown");
+    chat.input.value = "more @ch";
+    chat.input.selectionStart = 8;
+    chat.input.dispatch("input");
+    chat.send({
+      type: "mentionResults",
+      requestId: 3,
+      items: [{ path: "src/chat.js", source: "open" }],
+    });
+    chat.mentions.children[0]!.dispatch("mousedown");
+    expect(chat.attachments.children.length).toBe(1);
+  });
+
+  test("user messages render attached chips", () => {
+    const chat = loadChat();
+    chat.send({ type: "user", prompt: "fix this", attached: ["src/a.ts", "Problems"] });
+    const card = chat.transcript.children[0]!;
+    expect(card.textContent).toContain("fix this");
+    expect(card.textContent).toContain("src/a.ts");
+    expect(card.textContent).toContain("Problems");
+    chat.send({
+      type: "history",
+      items: [{ type: "user", text: "old", attached: ["Terminal"] }],
+    });
+    expect(chat.transcript.children[0]!.textContent).toContain("Terminal");
   });
 
   test("renders a changed-files card with an Open diff action", () => {
@@ -562,5 +822,113 @@ describe("composer file mentions", () => {
     const card = chat.transcript.children[0]!;
     expect(card.textContent).toContain("src/chat.js");
     expect(card.textContent).toContain("Open diff");
+  });
+});
+
+describe("editor tab header, banner, and pills", () => {
+  function postedTypes(chat: { posted: unknown[] }) {
+    return chat.posted
+      .map((msg) => (msg as { type?: string }).type)
+      .filter((type) => type !== "ready");
+  }
+
+  const headlessConfig = {
+    type: "config",
+    executionMode: "headless",
+    executionModeLabel: "Headless",
+    executionModeDescription: "Native chat path.",
+    model: "",
+    reasoningEffort: "",
+  };
+
+  test("focus hint names the unfocus key", () => {
+    const mac = loadChat({ platform: "MacIntel" });
+    expect(mac.focusHint.textContent).toContain("⌘ Esc");
+    const linux = loadChat({ platform: "Linux x86_64" });
+    expect(linux.focusHint.textContent).toContain("Esc");
+  });
+
+  test("config shows the mode banner and pills with fallbacks", () => {
+    const chat = loadChat();
+    chat.send(headlessConfig);
+    expect(chat.modeBanner.hidden).toBe(false);
+    expect(chat.modeBannerText.textContent).toContain("Headless mode active");
+    expect(chat.modeBannerText.textContent).toContain("Native chat path.");
+    expect(chat.modePill.textContent).toBe("Mode: Headless");
+    expect(chat.modelPill.textContent).toBe("Model: auto");
+    expect(chat.effortPill.textContent).toBe("Effort: default");
+  });
+
+  test("pills render configured model and effort", () => {
+    const chat = loadChat();
+    chat.send({
+      ...headlessConfig,
+      model: "muse-3",
+      reasoningEffort: "medium",
+    });
+    expect(chat.modelPill.textContent).toBe("Model: muse-3");
+    expect(chat.effortPill.textContent).toBe("Effort: Medium");
+  });
+
+  test("dismiss hides the banner until the mode changes", () => {
+    const chat = loadChat();
+    chat.send(headlessConfig);
+    expect(chat.modeBanner.hidden).toBe(false);
+    chat.modeBannerDismiss.click();
+    expect(chat.modeBanner.hidden).toBe(true);
+    chat.send(headlessConfig);
+    expect(chat.modeBanner.hidden).toBe(true);
+    chat.send({
+      ...headlessConfig,
+      executionMode: "interactive",
+      executionModeLabel: "Interactive",
+    });
+    expect(chat.modeBanner.hidden).toBe(false);
+  });
+
+  test("toolbar buttons post history and new-session messages", () => {
+    const chat = loadChat();
+    chat.toolbarHistory.click();
+    chat.toolbarNew.click();
+    expect(postedTypes(chat)).toEqual(["pickSession", "newSession"]);
+  });
+
+  test("pills post cycleMode and openSettings messages", () => {
+    const chat = loadChat();
+    chat.modePill.click();
+    chat.modelPill.click();
+    chat.effortPill.click();
+    expect(postedTypes(chat)).toEqual([
+      "cycleMode",
+      "openSettings",
+      "openSettings",
+    ]);
+  });
+
+  test("Escape blurs the composer input", () => {
+    const chat = loadChat();
+    chat.input.dispatch("keydown", { key: "Escape" });
+    expect(chat.input.blurred).toBe(true);
+  });
+
+  test("folder shows only when multiple folders are open", () => {
+    const chat = loadChat();
+
+    chat.send({
+      type: "folder",
+      name: "codemarc.github.io",
+      path: "/sites/codemarc.github.io",
+      multi: false,
+    });
+    expect(chat.folder.hidden).toBe(true);
+    expect(chat.folder.textContent).toBe("");
+
+    chat.send({ type: "folder", name: "site", path: "/y", multi: true });
+    expect(chat.folder.hidden).toBe(false);
+    expect(chat.folder.textContent).toBe("folder: site");
+
+    chat.send({ type: "folder", name: null, path: null, multi: true });
+    expect(chat.folder.hidden).toBe(false);
+    expect(chat.folder.textContent).toBe("folder: (pick one)");
   });
 });

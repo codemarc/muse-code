@@ -55,15 +55,15 @@ Open this folder in VS Code/Cursor and press **F5** (Run Muse CLI Chat Extension
 1. Open a real directory (not a symlink)
 2. Command Palette → **Muse CLI Chat: Open Chat** (or click the Muse activity icon)
 3. Optional: set `muse.useEchoProvider` to `true` for offline JSONL UI testing
-4. Send a prompt (**⌘Enter** on macOS, **Ctrl+Enter** on Linux, or the Send button). Enter inserts a newline. Type `@` to mention a workspace file.
+4. Send a prompt (**⌘Enter** on macOS, **Ctrl+Enter** on Linux, or the Send button). Enter inserts a newline. Type `@` to attach a file with contents, or **+ Attach** for the current file, open editors, Problems, or terminal output.
 
 ## Commands
 
 | Command | Action |
 |---------|--------|
 | Muse CLI Chat: Open Chat | Open the configured native chat surface |
-| Muse CLI Chat: Open in Editor Panel | Open the native chat in an editor panel |
-| Muse CLI Chat: Open in Secondary Sidebar | Open the native chat in the secondary sidebar (or activity-bar fallback) |
+| Muse CLI Chat: Open in Editor Panel | Open the native chat in an editor panel (default shortcut `⌘⇧R` on macOS, `Ctrl+Shift+R` on Linux; rebind in Keyboard Shortcuts) |
+| Muse CLI Chat: Open in Sidebar | Open the native chat in the sidebar |
 | Muse CLI Chat: Open in New Window | Reopen the current workspace with Muse ready |
 | Muse CLI Chat: Send Selection | Send the editor selection as context |
 | Muse CLI Chat: New Session | New `--session-id` |
@@ -91,7 +91,7 @@ Open this folder in VS Code/Cursor and press **F5** (Run Muse CLI Chat Extension
 | `useEchoProvider` | `false` | Offline UI smoke tests |
 | `extraArgs` | `[]` | Extra argv; `--yolo` / `--disable-sandbox` blocked (application-scoped) |
 | `toolOutputFormat` | `readable` | Default tool result view: `readable` (terminal-style for exec) or `json` (raw payload). Each card can toggle. |
-| `toolDisplay` | `compact` | Initial tool-card disclosure: `compact` folds all results, `balanced` opens only short results, and `detailed` opens all results. |
+| `toolDisplay` | `compact` | Initial tool-card disclosure: `minimal` shows dense static one-liners (silent runs collapse to a working pulse), `compact` folds all results, `balanced` opens only short results, and `detailed` opens all results. |
 | `chatFormat` | `markdown` | Assistant messages in the sidebar: `markdown` (sanitized) or `plain` text. |
 | `preferredLocation` | `secondarySidebar` | Where **Open Chat** opens the native UI: `secondarySidebar`, `panel`, or `terminal`. |
 | `useTerminal` | `false` | Open Chat launches the full Muse interactive terminal instead of the native UI. |
@@ -103,11 +103,14 @@ The sidebar keeps Muse’s `--session-id` in workspace state. **History** / the 
 
 Tool calls appear as one-line disclosure rows by default. Open a row to reveal
 Readable / Raw output, file chips, and **Open in canvas**. The `toolDisplay`
-setting chooses Compact, Balanced, or Detailed initial disclosure; failed calls
-remain folded with a red exit badge until opened. The canvas shows the full tool
-output beside the editor and adds Preview when stdout looks like a document.
+setting chooses Minimal, Compact, Balanced, or Detailed initial disclosure;
+Minimal rows are dense and static (no chevron, no success badge), and runs with
+nothing sensible to show collapse to a `working…` pulse every five tools.
+Failed calls keep a red exit badge and stay expandable in every mode. The
+canvas shows the full tool output beside the editor and adds Preview when
+stdout looks like a document.
 
-Type `@` in the composer to mention a file (open editors, git changes, then workspace search). After a turn, files that changed in the git working tree appear as a **Changed files** card and open in canvas as a diff. That is a review of writes Muse already made, not an accept/reject patch flow.
+Type `@` in the composer to attach a file (open editors, git changes, then workspace search). The pick becomes a context chip and the file contents are sent inline with your prompt, so the model does not need a round trip to read it. **+ Attach** adds the current file, all open editors, workspace Problems/diagnostics, or recent integrated-terminal output the same way (terminal output is captured via shell integration after the extension activates). The sidebar shows the compact prompt with chips; the full contents travel in the `muse exec` prompt and the session log. After a turn, files that changed in the git working tree appear as a **Changed files** card and open in canvas as a diff. That is a review of writes Muse already made, not an accept/reject patch flow.
 
 The chat is mode-aware. **Headless** is the default native-chat path and cannot answer interactive approval prompts. **Interactive** uses the integrated Muse terminal for workflows that need approvals or other interactive input. `muse.useTerminal` remains a compatible alias for opening the interactive path. MSP is planned as a future execution backend, not a 2.0 setting.
 

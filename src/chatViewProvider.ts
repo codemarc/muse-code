@@ -1,7 +1,23 @@
 import * as vscode from "vscode";
 import type { CanvasPanel, CanvasPayload } from "./canvasPanel";
+import {
+  buildAttachedPrompt,
+  formatDiagnosticsBlock,
+  formatEditorsBlock,
+  formatFileBlock,
+  formatTerminalBlock,
+  MAX_EDITOR_CHARS,
+  MAX_EDITORS,
+  readAttachmentFile,
+  stripAttachedContext,
+  summarizeAttachments,
+  type AttachmentRequest,
+  type EditorSnapshot,
+  type SimplifiedDiagnostic,
+} from "./contextAttachments";
 import { buildFileChips, type FileChip } from "./fileChips";
 import { probeMuseAuth } from "./museAuth";
+import { TerminalOutputStore } from "./terminalOutput";
 import { openLinkInMainView } from "./openInMainView";
 import {
   checkMuseInstallation,
@@ -28,6 +44,7 @@ import {
   transcriptToMarkdown,
 } from "./transcriptMarkdown";
 import type { MuseUiEvent } from "./museJsonl";
+import { buildMuseStatusText, buildMuseStatusTooltip } from "./museUi";
 import {
   deleteMuseSessions,
   formatSessionPickLabel,
@@ -44,10 +61,13 @@ import type { WorkspaceFolderStore } from "./workspaceFolder";
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "muse.chatView";
+  public static readonly editorViewType = "muse.chatPanel";
 
   private readonly webviews = new Set<vscode.Webview>();
   private run?: MuseRunHandle;
+  private editorPanel?: vscode.WebviewPanel;
   private readonly status: vscode.StatusBarItem;
+  private readonly terminalOutput = new TerminalOutputStore();
   private liveTranscript: TranscriptItem[] = [];
   private hydrateEpoch = 0;
 
@@ -58,10 +78,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private readonly canvasPanel: CanvasPanel,
   ) {
     this.status = vscode.window.createStatusBarItem(
-      vscode.StatusBarAlignment.Left,
+      vscode.StatusBarAlignment.Right,
       100,
     );
     this.status.command = "muse.openChat";
+    this.terminalOutput.start();
+    this.refreshStatusBar();
   }
 
   resolveWebviewView(
@@ -95,7 +117,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           await this.hydrateTranscript({ paintCacheFirst: true });
           break;
         case "submit":
-          await this.submitPrompt(String(msg.prompt ?? ""));
+          await this.submitPrompt(
+            String(msg.prompt ?? ""),
+            sanitizeAttachments(msg.attachments),
+          );
+          break;
+        case "currentFileQuery":
+          this.handleCurrentFileQuery(Number(msg.requestId ?? 0));
           break;
         case "stop":
           this.stop();
@@ -105,6 +133,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         case "pickSession":
           await this.pickSession();
+          break;
+        case "cycleMode":
+          await this.cycleExecutionMode();
+          break;
+        case "openSettings":
+          await this.openSettings();
           break;
         case "openTerminal":
           await vscode.commands.executeCommand("muse.openInteractiveTerminal");
@@ -264,7 +298,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         "toolOutputFormat",
         "readable",
       ),
-      toolDisplay: cfg.get<"compact" | "balanced" | "detailed">(
+      toolDisplay: cfg.get<"minimal" | "compact" | "balanced" | "detailed">(
         "toolDisplay",
         "compact",
       ),
@@ -272,7 +306,85 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       executionMode,
       executionModeLabel: EXECUTION_MODE_LABELS[executionMode],
       executionModeDescription: executionModeDescription(executionMode),
+      model: cfg.get<string>("model", ""),
+      reasoningEffort: cfg.get<string>("reasoningEffort", ""),
     });
+    this.refreshStatusBar();
+  }
+
+  refreshStatusBar(): void {
+    const cfg = vscode.workspace.getConfiguration("muse");
+    const executionMode = normalizeExecutionMode(
+      cfg.get<string>("executionMode", "headless"),
+    );
+    const label = EXECUTION_MODE_LABELS[executionMode];
+    this.status.text = buildMuseStatusText({
+      running: Boolean(this.run),
+      modeLabel: label,
+      sessionId: this.sessions.getSessionId(),
+    });
+    this.status.tooltip = buildMuseStatusTooltip({
+      modeLabel: label,
+      modeDescription: executionModeDescription(executionMode),
+      sessionId: this.sessions.getSessionId(),
+      folderName: this.folders.getFolder()?.name ?? null,
+    });
+    this.status.show();
+  }
+
+  async exportTranscript(): Promise<void> {
+    const markdown = await this.buildMuseAiHandoffMarkdown();
+    if (!markdown.trim()) {
+      void vscode.window.showInformationMessage(
+        "No Muse transcript to export yet.",
+      );
+      return;
+    }
+    const short = this.sessions.getSessionId().slice(0, 8);
+    const doc = await vscode.workspace.openTextDocument({
+      language: "markdown",
+      content: markdown,
+    });
+    await vscode.window.showTextDocument(doc, { preview: false });
+    void vscode.window.showInformationMessage(
+      `Exported Muse session ${short}… to a new editor.`,
+    );
+  }
+
+  async copyRequestId(): Promise<void> {
+    const sessionId = this.sessions.getSessionId();
+    try {
+      await vscode.env.clipboard.writeText(sessionId);
+    } catch {
+      void vscode.window.showWarningMessage(
+        "Could not copy the request ID to the clipboard.",
+      );
+      return;
+    }
+    void vscode.window.showInformationMessage(
+      `Copied request ID ${sessionId.slice(0, 8)}…`,
+    );
+  }
+
+  async openSettings(): Promise<void> {
+    await vscode.commands.executeCommand(
+      "workbench.action.openSettings",
+      "muse",
+    );
+  }
+
+  async cycleExecutionMode(): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration("muse");
+    const current = normalizeExecutionMode(
+      cfg.get<string>("executionMode", "headless"),
+    );
+    const next = current === "headless" ? "interactive" : "headless";
+    await cfg.update(
+      "executionMode",
+      next,
+      vscode.ConfigurationTarget.Global,
+    );
+    this.postConfig();
   }
 
   expandAll(): void {
@@ -308,22 +420,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   reveal(): void {
-    const [major, minor] = vscode.version.split(".").map((value) => Number(value));
-    const viewId = major === 1 && minor < 97
-      ? "muse.chatViewActivity"
-      : ChatViewProvider.viewType;
-    void vscode.commands.executeCommand(`${viewId}.focus`);
+    void vscode.commands.executeCommand(`${ChatViewProvider.viewType}.focus`);
   }
 
   async openPanel(column = vscode.ViewColumn.Beside): Promise<void> {
+    if (this.editorPanel) {
+      this.editorPanel.reveal(column);
+      return;
+    }
     const panel = vscode.window.createWebviewPanel(
-      "muse.chatPanel",
-      "Muse CLI Chat",
+      ChatViewProvider.editorViewType,
+      "Muse Code",
       column,
-      { enableScripts: true, retainContextWhenHidden: true },
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, "media")],
+      },
     );
+    panel.iconPath = vscode.Uri.joinPath(this.extensionUri, "media", "muse.svg");
+    this.editorPanel = panel;
     const dispose = this.attachWebview(panel.webview);
-    panel.onDidDispose(dispose);
+    panel.onDidDispose(() => {
+      dispose();
+      if (this.editorPanel === panel) {
+        this.editorPanel = undefined;
+      }
+    });
   }
 
   newSession(): void {
@@ -337,6 +460,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       type: "status",
       text: `New session ${id.slice(0, 8)}…`,
     });
+    this.refreshStatusBar();
   }
 
   stop(): void {
@@ -531,14 +655,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       source: "cache",
     });
     await this.hydrateTranscript({ paintCacheFirst: false });
+    this.refreshStatusBar();
     void vscode.window.showInformationMessage(
       `Resumed Muse session ${sessionId.slice(0, 8)}…`,
     );
   }
 
-  async submitPrompt(prompt: string): Promise<void> {
+  async submitPrompt(prompt: string, attachments: AttachmentRequest[] = []): Promise<void> {
     const trimmed = prompt.trim();
-    if (!trimmed) {
+    if (!trimmed && attachments.length === 0) {
       return;
     }
     if (this.run) {
@@ -585,19 +710,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const sessionId = this.sessions.getSessionId();
     const snapshot = await readGitSnapshot(workspacePath);
 
+    // Expand context chips into inline blocks for the model. The transcript
+    // keeps the expanded prompt (what the model saw); the sidebar shows the
+    // compact prompt with chip labels.
+    const { blocks, warnings } = this.resolveAttachments(attachments, workspacePath);
+    const expanded = buildAttachedPrompt(
+      trimmed || "See attached context.",
+      blocks,
+    );
+    const chipLabels = summarizeAttachments(attachments);
+    for (const warning of warnings) {
+      this.post({ type: "status", text: warning });
+    }
+
     this.liveTranscript = appendLiveUiEvent(this.liveTranscript, {
       kind: "user",
-      prompt: trimmed,
+      prompt: expanded,
     });
     this.sessions.saveTranscript(sessionId, this.liveTranscript);
 
-    this.post({ type: "user", prompt: trimmed });
+    this.post({ type: "user", prompt: trimmed, attached: chipLabels });
     this.post({ type: "running", running: true });
-    this.setRunning(true, sessionId);
+    this.setRunning(true);
 
     try {
       this.run = startMuseExec({
-        prompt: trimmed,
+        prompt: expanded,
         workspacePath,
         sessionId,
         onEvent: (event) => this.handleEvent(event),
@@ -701,6 +839,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   dispose(): void {
     this.stop();
+    this.terminalOutput.dispose();
     this.status.dispose();
   }
 
@@ -796,6 +935,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       path: folder?.fsPath ?? null,
       multi,
     });
+    this.refreshStatusBar();
   }
 
   private async probeSetup(): Promise<{
@@ -942,15 +1082,69 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private setRunning(running: boolean, sessionId?: string): void {
-    if (running) {
-      const short = (sessionId ?? this.sessions.getSessionId()).slice(0, 8);
-      this.status.text = `$(sync~spin) Muse ${short}`;
-      this.status.tooltip = "Muse CLI Chat run in progress";
-      this.status.show();
-    } else {
-      this.status.hide();
+  private setRunning(running: boolean): void {
+    void running;
+    this.refreshStatusBar();
+  }
+
+  private handleCurrentFileQuery(requestId: number): void {
+    const doc = vscode.window.activeTextEditor?.document;
+    let path: string | null = null;
+    if (doc && doc.uri.scheme === "file" && !doc.isUntitled) {
+      const rel = vscode.workspace.asRelativePath(doc.uri, false);
+      if (rel && rel !== doc.uri.fsPath) {
+        path = rel.replace(/\\/g, "/");
+      }
     }
+    this.post({ type: "currentFileResult", requestId, path });
+  }
+
+  private resolveAttachments(
+    attachments: AttachmentRequest[],
+    workspacePath: string,
+  ): { blocks: string[]; warnings: string[] } {
+    const blocks: string[] = [];
+    const warnings: string[] = [];
+    const seenFiles = new Set<string>();
+    let fileCount = 0;
+    for (const attachment of attachments) {
+      switch (attachment.kind) {
+        case "file": {
+          const rel = (attachment.path || "").replace(/\\/g, "/").trim();
+          if (!rel || seenFiles.has(rel)) {
+            break;
+          }
+          seenFiles.add(rel);
+          fileCount += 1;
+          if (fileCount > 10) {
+            warnings.push(`Skipped ${rel}: too many file attachments (max 10).`);
+            break;
+          }
+          const read = readAttachmentFile(workspacePath, rel);
+          if (!read.ok) {
+            warnings.push(read.error);
+            blocks.push(`<file path="${rel}">\n(${read.error})\n</file>`);
+          } else {
+            blocks.push(formatFileBlock(rel, read.content, { truncated: read.truncated }));
+          }
+          break;
+        }
+        case "problems": {
+          const diags = collectWorkspaceDiagnostics(workspacePath);
+          blocks.push(formatDiagnosticsBlock(diags));
+          break;
+        }
+        case "terminal": {
+          blocks.push(formatTerminalBlock(this.terminalOutput.recent()));
+          break;
+        }
+        case "editors": {
+          blocks.push(formatEditorsBlock(collectOpenEditors(workspacePath)));
+          break;
+        }
+      }
+    }
+    return { blocks, warnings };
   }
 
   private post(message: unknown): void {
@@ -964,6 +1158,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private enrichItemForWebview(item: TranscriptItem): unknown {
+    if (item.type === "user") {
+      const stripped = stripAttachedContext(item.text);
+      if (stripped.attached.length === 0) {
+        return item;
+      }
+      return { type: "user", text: stripped.display, attached: stripped.attached };
+    }
     if (item.type === "assistant") {
       return {
         type: "assistant",
@@ -1034,21 +1235,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
   <header class="top">
-    <div class="brand-wrap">
+    <div class="top-row">
       <div class="brand">Muse CLI Chat</div>
+      <div class="toolbar" role="toolbar" aria-label="Session">
+        <button type="button" id="toolbar-history" class="icon-btn" title="Session history">History</button>
+        <button type="button" id="toolbar-new" class="icon-btn" title="New session">+ New</button>
+      </div>
+    </div>
+    <div class="sub-row">
       <div class="unofficial">
         Unofficial · wraps Meta Muse Code
         <!-- <button type="button" id="muse-ai" class="muse-ai-link" title="Copy this session and open muse.ai">muse.ai</button> -->
       </div>
-    </div>
       <div class="meta">
         <div id="folder" class="folder"></div>
         <div id="execution-mode" class="execution-mode" title=""></div>
         <button type="button" id="session-btn" class="session-btn" title="Resume or start a Muse session">
-        <span id="session" class="session">————</span>
-      </button>
+          <span id="session" class="session">————</span>
+        </button>
+      </div>
     </div>
   </header>
+  <div id="mode-banner" class="mode-banner" hidden>
+    <span id="mode-banner-text" class="mode-banner-text"></span>
+    <button type="button" id="mode-banner-dismiss" class="secondary mode-banner-dismiss">Dismiss</button>
+  </div>
   <div id="setup" class="setup" hidden>
     <p id="setup-msg" class="setup-msg"></p>
     <pre id="setup-install" class="setup-install"></pre>
@@ -1060,14 +1271,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   </div>
   <main id="transcript" class="transcript" aria-live="polite"></main>
   <footer class="composer">
+    <div class="composer-head">
+      <span id="focus-hint" class="focus-hint"></span>
+    </div>
+    <div id="attachments" class="attachments" hidden aria-label="Attached context"></div>
     <div id="mentions" class="mentions" hidden role="listbox" aria-label="File mentions"></div>
     <textarea id="input" rows="3" placeholder="Ask Muse… (@ file, ⌘Enter to send)"></textarea>
     <div class="actions">
+      <div class="attach-wrap">
+        <button type="button" id="attach" class="secondary" title="Attach file contents, problems, terminal output, or open editors">+ Attach</button>
+        <div id="attach-menu" class="attach-menu" hidden role="menu">
+          <button type="button" data-attach="file" role="menuitem">File… (@)</button>
+          <button type="button" data-attach="current" role="menuitem">Current file</button>
+          <button type="button" data-attach="editors" role="menuitem">Open editors</button>
+          <button type="button" data-attach="problems" role="menuitem">Problems</button>
+          <button type="button" data-attach="terminal" role="menuitem">Terminal output</button>
+        </div>
+      </div>
+      <div class="pills" role="group" aria-label="Run settings">
+        <button type="button" id="mode-pill" class="pill" title="Switch execution mode"></button>
+        <button type="button" id="model-pill" class="pill" title="Model (opens settings)"></button>
+        <button type="button" id="effort-pill" class="pill" title="Reasoning effort (opens settings)"></button>
+      </div>
       <button type="button" id="history" class="secondary">History</button>
       <button type="button" id="stop" class="secondary" disabled>Stop</button>
-      <button type="button" id="send" class="primary" title="Send (⌘Enter)">Send</button>
+      <button type="button" id="send" class="primary send-btn" title="Send (⌘Enter)">↑ Send</button>
     </div>
-    <p class="hint">Type @ to mention a file. After a turn, changed-file diffs open in canvas. First send may ask to enable disable-approval. Not affiliated with Meta.</p>
+    <p class="hint">Type @ to attach a file with contents. + Attach adds problems, terminal output, or open editors. After a turn, changed-file diffs open in canvas. Not affiliated with Meta.</p>
   </footer>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
@@ -1082,4 +1312,110 @@ function getNonce(): string {
     text += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   return text;
+}
+
+/** Validate webview attachment descriptors (untrusted input). */
+function sanitizeAttachments(value: unknown): AttachmentRequest[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const out: AttachmentRequest[] = [];
+  for (const raw of value.slice(0, 16)) {
+    if (!raw || typeof raw !== "object") {
+      continue;
+    }
+    const kind = (raw as { kind?: unknown }).kind;
+    if (kind === "file") {
+      const path = String((raw as { path?: unknown }).path ?? "").slice(0, 1024);
+      if (path.trim()) {
+        out.push({ kind: "file", path: path.trim() });
+      }
+      continue;
+    }
+    if (kind === "problems" || kind === "terminal" || kind === "editors") {
+      if (!out.some((a) => a.kind === kind)) {
+        out.push({ kind });
+      }
+    }
+  }
+  return out;
+}
+
+function severityName(severity: vscode.DiagnosticSeverity): string {
+  switch (severity) {
+    case vscode.DiagnosticSeverity.Error:
+      return "error";
+    case vscode.DiagnosticSeverity.Warning:
+      return "warning";
+    case vscode.DiagnosticSeverity.Information:
+      return "info";
+    case vscode.DiagnosticSeverity.Hint:
+      return "hint";
+    default:
+      return "diagnostic";
+  }
+}
+
+function collectWorkspaceDiagnostics(workspacePath: string): SimplifiedDiagnostic[] {
+  const out: SimplifiedDiagnostic[] = [];
+  const prefix = workspacePath.endsWith("/") ? workspacePath : `${workspacePath}/`;
+  for (const [uri, diags] of vscode.languages.getDiagnostics()) {
+    if (uri.scheme !== "file" || !uri.fsPath.startsWith(prefix)) {
+      continue;
+    }
+    const rel = uri.fsPath.slice(prefix.length);
+    for (const d of diags) {
+      out.push({
+        path: rel,
+        line: d.range.start.line + 1,
+        character: d.range.start.character + 1,
+        severity: severityName(d.severity),
+        message: d.message,
+        source: d.source,
+      });
+    }
+  }
+  const rank = { error: 0, warning: 1, info: 2, hint: 3, diagnostic: 4 };
+  out.sort((a, b) => {
+    const bySeverity = (rank[a.severity as keyof typeof rank] ?? 4) - (rank[b.severity as keyof typeof rank] ?? 4);
+    if (bySeverity !== 0) {
+      return bySeverity;
+    }
+    return a.path.localeCompare(b.path) || a.line - b.line || a.character - b.character;
+  });
+  return out;
+}
+
+function collectOpenEditors(workspacePath: string): EditorSnapshot[] {
+  const prefix = workspacePath.endsWith("/") ? workspacePath : `${workspacePath}/`;
+  const active = vscode.window.activeTextEditor?.document.uri.fsPath;
+  const visible = new Set(
+    (vscode.window.visibleTextEditors ?? [])
+      .map((e) => e.document.uri.fsPath)
+      .filter(Boolean),
+  );
+  const docs = vscode.workspace.textDocuments.filter(
+    (doc) => doc.uri.scheme === "file" && !doc.isUntitled && doc.uri.fsPath.startsWith(prefix),
+  );
+  docs.sort((a, b) => {
+    const rank = (fsPath: string): number => {
+      if (fsPath === active) {
+        return 0;
+      }
+      if (visible.has(fsPath)) {
+        return 1;
+      }
+      return 2;
+    };
+    return rank(a.uri.fsPath) - rank(b.uri.fsPath) || a.uri.fsPath.localeCompare(b.uri.fsPath);
+  });
+  return docs.slice(0, MAX_EDITORS).map((doc) => {
+    const text = doc.getText();
+    const truncated = text.length > MAX_EDITOR_CHARS;
+    return {
+      path: doc.uri.fsPath.slice(prefix.length),
+      content: truncated ? text.slice(0, MAX_EDITOR_CHARS) : text,
+      truncated,
+    };
+  });
 }

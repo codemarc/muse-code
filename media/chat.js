@@ -17,15 +17,31 @@
   const museAiBtn = document.getElementById("muse-ai");
   const pickFolderBtn = document.getElementById("pick-folder");
   const mentionsEl = document.getElementById("mentions");
+  const attachmentsEl = document.getElementById("attachments");
+  const attachBtn = document.getElementById("attach");
+  const attachMenu = document.getElementById("attach-menu");
+  const toolbarHistoryBtn = document.getElementById("toolbar-history");
+  const toolbarNewBtn = document.getElementById("toolbar-new");
+  const modeBanner = document.getElementById("mode-banner");
+  const modeBannerText = document.getElementById("mode-banner-text");
+  const modeBannerDismiss = document.getElementById("mode-banner-dismiss");
+  const focusHint = document.getElementById("focus-hint");
+  const modePill = document.getElementById("mode-pill");
+  const modelPill = document.getElementById("model-pill");
+  const effortPill = document.getElementById("effort-pill");
 
-  const submitChord =
+  const isMac =
     typeof navigator !== "undefined" &&
-    /Mac|iPhone|iPad/.test(navigator.platform || "")
-      ? "⌘Enter"
-      : "Ctrl+Enter";
+    /Mac|iPhone|iPad/.test(navigator.platform || "");
+  const submitChord = isMac ? "⌘Enter" : "Ctrl+Enter";
   input.placeholder =
-    "Ask Muse… (@ file, " + submitChord + " to send)";
+    "Ask Muse… (@ attach file, " + submitChord + " to send)";
   sendBtn.title = "Send (" + submitChord + ")";
+  if (focusHint) {
+    focusHint.textContent = isMac
+      ? "⌘ Esc to focus or unfocus Muse"
+      : "Esc to unfocus · click to focus Muse";
+  }
 
   const PREVIEW_LINES = 12;
   const PREVIEW_CHARS = 800;
@@ -38,10 +54,16 @@
   let toolDisplay = "compact";
   let chatFormat = "markdown";
   const toolCards = new Set();
+  let silentToolRuns = 0;
+  const MINIMAL_HEARTBEAT_EVERY = 5;
   let mentionItems = [];
   let mentionIndex = 0;
   let mentionRequestId = 0;
   let mentionToken = null;
+  let attachments = [];
+  let currentFileRequestId = 0;
+  let dismissedBannerMode = null;
+  let currentExecutionMode = null;
 
   // keep in sync with canvas.js:LINK_RE and previewContent.ts:DOC_PATH_SOURCE
   const LINK_RE =
@@ -88,7 +110,123 @@
     }
   }
 
+  function attachmentLabel(a) {
+    if (!a) {
+      return "";
+    }
+    if (a.kind === "file") {
+      return a.path || "file";
+    }
+    if (a.kind === "problems") {
+      return "Problems";
+    }
+    if (a.kind === "terminal") {
+      return "Terminal";
+    }
+    if (a.kind === "editors") {
+      return "Open editors";
+    }
+    return String(a.label || a.kind || "context");
+  }
+
+  function attachmentKey(a) {
+    return a.kind === "file" ? "file:" + (a.path || "") : String(a.kind);
+  }
+
+  function addAttachment(a) {
+    if (!a || !a.kind) {
+      return;
+    }
+    if (a.kind === "file" && !a.path) {
+      return;
+    }
+    const key = attachmentKey(a);
+    for (let i = 0; i < attachments.length; i++) {
+      if (attachmentKey(attachments[i]) === key) {
+        return;
+      }
+    }
+    if (attachments.length >= 16) {
+      return;
+    }
+    attachments.push(a.kind === "file" ? { kind: "file", path: a.path } : { kind: a.kind });
+    renderAttachments();
+  }
+
+  function removeAttachment(index) {
+    attachments.splice(index, 1);
+    renderAttachments();
+  }
+
+  function clearAttachments() {
+    attachments = [];
+    renderAttachments();
+  }
+
+  function renderAttachments() {
+    if (!attachmentsEl) {
+      return;
+    }
+    attachmentsEl.textContent = "";
+    if (!attachments.length) {
+      attachmentsEl.hidden = true;
+      return;
+    }
+    attachmentsEl.hidden = false;
+    for (let i = 0; i < attachments.length; i++) {
+      (function (item, index) {
+        const chip = document.createElement("span");
+        chip.className = "ctx-chip";
+        chip.title = item.kind === "file" ? "Attached file contents: " + item.path : "Attached: " + attachmentLabel(item);
+        const label = document.createElement("span");
+        label.className = "ctx-chip-label";
+        label.textContent = attachmentLabel(item);
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "ctx-chip-remove";
+        remove.textContent = "×";
+        remove.title = "Remove";
+        remove.setAttribute("aria-label", "Remove " + attachmentLabel(item));
+        remove.addEventListener("click", function () {
+          removeAttachment(index);
+        });
+        chip.appendChild(label);
+        chip.appendChild(remove);
+        attachmentsEl.appendChild(chip);
+      })(attachments[i], i);
+    }
+  }
+
+  // Read-only chips shown on user messages (live + history).
+  function appendContextChips(parent, attached) {
+    if (!attached || !attached.length) {
+      return;
+    }
+    const row = document.createElement("div");
+    row.className = "ctx-row";
+    for (let i = 0; i < attached.length; i++) {
+      const chip = document.createElement("span");
+      chip.className = "ctx-chip ctx-chip-static";
+      chip.textContent = String(attached[i]);
+      row.appendChild(chip);
+    }
+    parent.appendChild(row);
+  }
+
+  function resetSilentToolRuns() {
+    silentToolRuns = 0;
+  }
+
+  function noteSilentToolRun() {
+    silentToolRuns += 1;
+    if (silentToolRuns >= MINIMAL_HEARTBEAT_EVERY) {
+      silentToolRuns = 0;
+      addMsg("status heartbeat", "working…");
+    }
+  }
+
   function addMsg(className, text, label, linkify, html, files) {
+    resetSilentToolRuns();
     const el = document.createElement("div");
     el.className = "msg " + className;
     if (label) {
@@ -249,11 +387,35 @@
     return name || "Tool result";
   }
 
+  function looksRawSummary(text) {
+    return /^[<{\[]/.test(String(text || "").trim());
+  }
+
+  function minimalSummary(data) {
+    const meta = data.execMeta || {};
+    if (meta.description) {
+      return cleanSummaryLine(meta.description);
+    }
+    const name = friendlyToolName(data.name);
+    if (name && !isGenericSummary(name) && !looksRawSummary(name)) {
+      return name;
+    }
+    if (meta.command) {
+      return "$ " + truncateOneLine(cleanSummaryLine(meta.command), 80);
+    }
+    const line =
+      firstContentLine(data.resultView) || firstContentLine(data.resultRaw);
+    if (line && !looksRawSummary(line)) {
+      return truncateOneLine(line, 80);
+    }
+    return "";
+  }
+
   function shouldOpenToolCard(text) {
     if (toolDisplay === "detailed") {
       return true;
     }
-    if (toolDisplay === "compact") {
+    if (toolDisplay === "compact" || toolDisplay === "minimal") {
       return false;
     }
     return (
@@ -262,6 +424,17 @@
   }
 
   function addToolCard(data) {
+    const meta = data.execMeta || {};
+    const failed =
+      meta.exitCode !== undefined &&
+      meta.exitCode !== null &&
+      meta.exitCode !== 0;
+    if (toolDisplay === "minimal" && !failed && !minimalSummary(data)) {
+      noteSilentToolRun();
+      return null;
+    }
+    resetSilentToolRuns();
+
     const el = document.createElement("div");
     el.className = "msg tool tool-card";
 
@@ -279,13 +452,12 @@
 
     const label = document.createElement("span");
     label.className = "label tool-summary";
-    const meta = data.execMeta || {};
-    label.textContent = toolSummary(data);
     disclosureBtn.appendChild(label);
     header.appendChild(disclosureBtn);
 
+    let badge = null;
     if (meta.exitCode !== undefined && meta.exitCode !== null) {
-      const badge = document.createElement("span");
+      badge = document.createElement("span");
       badge.className =
         "tool-exit " + (meta.exitCode === 0 ? "tool-exit-ok" : "tool-exit-fail");
       badge.textContent = "exit " + meta.exitCode;
@@ -360,6 +532,22 @@
       rawBtn.classList.toggle("active", mode === "json");
     }
 
+    function minimalLabel() {
+      return minimalSummary(data) || (failed ? toolSummary(data) : "");
+    }
+
+    function renderMinimalDisplay() {
+      const minimal = toolDisplay === "minimal";
+      el.classList.toggle("tool-minimal", minimal);
+      el.classList.toggle("tool-minimal-fail", minimal && failed);
+      label.textContent = minimal ? minimalLabel() : toolSummary(data);
+      el.hidden = minimal && !failed && !label.textContent;
+      chevron.hidden = minimal && !failed;
+      if (badge) {
+        badge.hidden = minimal && !failed;
+      }
+    }
+
     let cardOpen = shouldOpenToolCard(activeText());
     let manualDisclosure = false;
 
@@ -393,6 +581,7 @@
 
     const controller = {
       applyDisplay() {
+        renderMinimalDisplay();
         if (manualDisclosure) {
           return;
         }
@@ -400,6 +589,9 @@
         renderDisclosure();
       },
       setOpen(open) {
+        if (open && toolDisplay === "minimal" && !failed) {
+          return;
+        }
         manualDisclosure = true;
         cardOpen = open;
         if (!open) {
@@ -426,12 +618,16 @@
       renderBody();
     });
     disclosureBtn.addEventListener("click", function () {
+      if (toolDisplay === "minimal" && !failed) {
+        return;
+      }
       manualDisclosure = true;
       cardOpen = !cardOpen;
       renderDisclosure();
     });
 
     header.appendChild(expandBtn);
+    renderMinimalDisplay();
     renderDisclosure();
 
     transcript.appendChild(el);
@@ -450,6 +646,7 @@
     transcript.innerHTML = "";
     toolCards.clear();
     assistantEl = null;
+    resetSilentToolRuns();
   }
 
   function renderHistory(items) {
@@ -459,9 +656,11 @@
     }
     for (const item of items) {
       switch (item.type) {
-        case "user":
-          addMsg("user", item.text || "");
+        case "user": {
+          const el = addMsg("user", item.text || "");
+          appendContextChips(el, item.attached);
           break;
+        }
         case "assistant":
           addMsg(
             "assistant",
@@ -516,6 +715,49 @@
     setRunning(running);
   }
 
+  function formatModelPill(model) {
+    const trimmed = String(model || "").trim();
+    return trimmed || "auto";
+  }
+
+  function formatEffortPill(effort) {
+    const trimmed = String(effort || "").trim().toLowerCase();
+    if (!trimmed) {
+      return "default";
+    }
+    return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+  }
+
+  function renderModeBanner(msg) {
+    if (!modeBanner || !modeBannerText) {
+      return;
+    }
+    currentExecutionMode = msg.executionMode || null;
+    const label = msg.executionModeLabel || "Headless";
+    if (dismissedBannerMode === msg.executionMode) {
+      modeBanner.hidden = true;
+      return;
+    }
+    const desc = msg.executionModeDescription || "";
+    modeBannerText.textContent = desc
+      ? label + " mode active — " + desc
+      : label + " mode active.";
+    modeBanner.hidden = false;
+  }
+
+  function renderPills(msg) {
+    if (modePill && msg.executionModeLabel) {
+      modePill.textContent = "Mode: " + msg.executionModeLabel;
+      modePill.title = msg.executionModeDescription || "Switch execution mode";
+    }
+    if (modelPill && msg.model !== undefined) {
+      modelPill.textContent = "Model: " + formatModelPill(msg.model);
+    }
+    if (effortPill && msg.reasoningEffort !== undefined) {
+      effortPill.textContent = "Effort: " + formatEffortPill(msg.reasoningEffort);
+    }
+  }
+
   function ensureAssistant() {
     if (!assistantEl) {
       assistantEl = addMsg("assistant", "", "Muse");
@@ -525,13 +767,21 @@
 
   function submit() {
     const prompt = input.value.trim();
-    if (!prompt || running || !museReady) {
+    if ((!prompt && !attachments.length) || running || !museReady) {
       return;
     }
     hideMentions();
+    hideAttachMenu();
     assistantEl = null;
-    vscode.postMessage({ type: "submit", prompt });
+    vscode.postMessage({
+      type: "submit",
+      prompt: prompt,
+      attachments: attachments.map(function (a) {
+        return a.kind === "file" ? { kind: "file", path: a.path } : { kind: a.kind };
+      }),
+    });
     input.value = "";
+    clearAttachments();
   }
 
   function pickSession() {
@@ -575,16 +825,38 @@
       hideMentions();
       return;
     }
-    const insert = "`" + path + "` ";
-    input.value =
-      input.value.slice(0, token.start) + insert + input.value.slice(token.end);
-    const nextCursor = token.start + insert.length;
+    // Cursor-style: the pick becomes a context chip (contents attached at
+    // send time) instead of a bare path in the prompt text.
+    input.value = input.value.slice(0, token.start) + input.value.slice(token.end);
+    const nextCursor = token.start;
     input.selectionStart = nextCursor;
     input.selectionEnd = nextCursor;
+    addAttachment({ kind: "file", path: path });
     hideMentions();
     if (typeof input.focus === "function") {
       input.focus();
     }
+  }
+
+  function hideAttachMenu() {
+    if (attachMenu) {
+      attachMenu.hidden = true;
+    }
+  }
+
+  function toggleAttachMenu() {
+    if (!attachMenu) {
+      return;
+    }
+    attachMenu.hidden = !attachMenu.hidden;
+  }
+
+  function requestCurrentFile() {
+    currentFileRequestId += 1;
+    vscode.postMessage({
+      type: "currentFileQuery",
+      requestId: currentFileRequestId,
+    });
   }
 
   function renderMentions(items) {
@@ -691,6 +963,40 @@
   });
   historyBtn.addEventListener("click", pickSession);
   sessionBtn.addEventListener("click", pickSession);
+  if (toolbarHistoryBtn) {
+    toolbarHistoryBtn.addEventListener("click", pickSession);
+  }
+  if (toolbarNewBtn) {
+    toolbarNewBtn.addEventListener("click", function () {
+      if (running) {
+        return;
+      }
+      vscode.postMessage({ type: "newSession" });
+    });
+  }
+  if (modeBannerDismiss) {
+    modeBannerDismiss.addEventListener("click", function () {
+      dismissedBannerMode = currentExecutionMode;
+      if (modeBanner) {
+        modeBanner.hidden = true;
+      }
+    });
+  }
+  if (modePill) {
+    modePill.addEventListener("click", function () {
+      vscode.postMessage({ type: "cycleMode" });
+    });
+  }
+  if (modelPill) {
+    modelPill.addEventListener("click", function () {
+      vscode.postMessage({ type: "openSettings" });
+    });
+  }
+  if (effortPill) {
+    effortPill.addEventListener("click", function () {
+      vscode.postMessage({ type: "openSettings" });
+    });
+  }
   recheckBtn.addEventListener("click", function () {
     vscode.postMessage({ type: "recheck" });
   });
@@ -705,6 +1011,49 @@
   pickFolderBtn.addEventListener("click", function () {
     vscode.postMessage({ type: "selectFolder" });
   });
+  if (attachBtn) {
+    attachBtn.addEventListener("click", function () {
+      toggleAttachMenu();
+    });
+  }
+  if (attachMenu) {
+    const items = attachMenu.querySelectorAll
+      ? attachMenu.querySelectorAll("[data-attach]")
+      : [];
+    for (let i = 0; i < items.length; i++) {
+      (function (btn) {
+        btn.addEventListener("click", function () {
+          const kind = btn.getAttribute ? btn.getAttribute("data-attach") : null;
+          hideAttachMenu();
+          if (kind === "file") {
+            if (typeof input.focus === "function") {
+              input.focus();
+            }
+            const cursor =
+              typeof input.selectionStart === "number"
+                ? input.selectionStart
+                : input.value.length;
+            const needsSpace = cursor > 0 && !/\s/.test(input.value.charAt(cursor - 1));
+            const insert = (needsSpace ? " " : "") + "@";
+            input.value =
+              input.value.slice(0, cursor) + insert + input.value.slice(cursor);
+            const next = cursor + insert.length;
+            input.selectionStart = next;
+            input.selectionEnd = next;
+            requestMentions();
+            return;
+          }
+          if (kind === "current") {
+            requestCurrentFile();
+            return;
+          }
+          if (kind === "editors" || kind === "problems" || kind === "terminal") {
+            addAttachment({ kind: kind });
+          }
+        });
+      })(items[i]);
+    }
+  }
 
   input.addEventListener("input", requestMentions);
   input.addEventListener("keyup", function (e) {
@@ -743,6 +1092,12 @@
         return;
       }
     }
+    if (e.key === "Escape") {
+      if (typeof input.blur === "function") {
+        input.blur();
+      }
+      return;
+    }
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       hideMentions();
@@ -762,10 +1117,13 @@
           executionModeEl.textContent = "Mode: " + msg.executionModeLabel;
           executionModeEl.title = msg.executionModeDescription || "";
         }
+        renderModeBanner(msg);
+        renderPills(msg);
         if (msg.toolOutputFormat === "json" || msg.toolOutputFormat === "readable") {
           toolOutputFormat = msg.toolOutputFormat;
         }
         if (
+          msg.toolDisplay === "minimal" ||
           msg.toolDisplay === "compact" ||
           msg.toolDisplay === "balanced" ||
           msg.toolDisplay === "detailed"
@@ -783,8 +1141,11 @@
         sessionEl.textContent = (msg.sessionId || "").slice(0, 8);
         break;
       case "folder":
-        if (msg.name) {
-          folderEl.textContent = msg.multi ? "folder: " + msg.name : msg.name;
+        // Single-root workspaces already name the folder in the window
+        // title, so only multi-root needs the header indicator.
+        folderEl.hidden = !msg.multi;
+        if (msg.name && msg.multi) {
+          folderEl.textContent = "folder: " + msg.name;
           folderEl.title = msg.path || "";
         } else if (msg.multi) {
           folderEl.textContent = "folder: (pick one)";
@@ -813,10 +1174,12 @@
       case "cleared":
         clearTranscript();
         break;
-      case "user":
+      case "user": {
         assistantEl = null;
-        addMsg("user", msg.prompt || "");
+        const el = addMsg("user", msg.prompt || "");
+        appendContextChips(el, msg.attached);
         break;
+      }
       case "assistant_delta": {
         const body = ensureAssistant();
         body.textContent += msg.text || "";
@@ -859,6 +1222,11 @@
       case "mentionResults":
         if (Number(msg.requestId) === mentionRequestId) {
           renderMentions(msg.items || []);
+        }
+        break;
+      case "currentFileResult":
+        if (Number(msg.requestId) === currentFileRequestId && msg.path) {
+          addAttachment({ kind: "file", path: msg.path });
         }
         break;
       case "task":

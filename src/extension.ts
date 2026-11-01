@@ -9,13 +9,6 @@ import { normalizeExecutionMode } from "./executionMode";
 const OPEN_ON_ACTIVATE_KEY = "muse.openOnActivate";
 
 export function activate(context: vscode.ExtensionContext): void {
-  const [major, minor] = vscode.version.split(".").map((value) => Number(value));
-  void vscode.commands.executeCommand(
-    "setContext",
-    "muse:doesNotSupportSecondarySidebar",
-    major === 1 && minor < 97,
-  );
-
   const sessions = new SessionStore(context);
   const folders = new WorkspaceFolderStore(context);
   const canvasPanel = new CanvasPanel(context.extensionUri, folders);
@@ -54,11 +47,10 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, provider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
-    vscode.window.registerWebviewViewProvider("muse.chatViewActivity", provider, {
-      webviewOptions: { retainContextWhenHidden: true },
-    }),
     vscode.commands.registerCommand("muse.openChat", () => openPreferred()),
+    vscode.commands.registerCommand("muse.open", () => openPreferred()),
     vscode.commands.registerCommand("muse.openPanel", () => provider.openPanel()),
+    vscode.commands.registerCommand("muse.openEditor", () => provider.openPanel()),
     vscode.commands.registerCommand("muse.openSecondarySidebar", () => provider.reveal()),
     vscode.commands.registerCommand("muse.openNewWindow", async () => {
       const folder = folders.getFolder() ?? vscode.workspace.workspaceFolders?.[0];
@@ -111,12 +103,23 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("muse.collapseAll", () =>
       provider.collapseAll(),
     ),
+    vscode.commands.registerCommand("muse.exportTranscript", () =>
+      provider.exportTranscript(),
+    ),
+    vscode.commands.registerCommand("muse.copyRequestId", () =>
+      provider.copyRequestId(),
+    ),
+    vscode.commands.registerCommand("muse.openSettings", () =>
+      provider.openSettings(),
+    ),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (
         e.affectsConfiguration("muse.toolOutputFormat") ||
         e.affectsConfiguration("muse.toolDisplay") ||
         e.affectsConfiguration("muse.chatFormat")
         || e.affectsConfiguration("muse.executionMode")
+        || e.affectsConfiguration("muse.model")
+        || e.affectsConfiguration("muse.reasoningEffort")
       ) {
         provider.postConfig();
         canvasPanel.postConfig();
