@@ -1,6 +1,16 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { sessionApprovalPolicy, needsApprovalCapableMode, executionModeTarget, readSessionApprovalPolicy } from "./sessionExecution";
+import { sessionApprovalPolicy, needsApprovalCapableMode, executionModeTarget, isWindowsPanelSandboxFailure, readSessionApprovalPolicy } from "./sessionExecution";
+
+test("offers Windows recovery only for a failed shell tool with the Muse sandbox error", () => {
+  const resultRaw = "tool failed: environment failure: sandbox enforcement unavailable: windows_elevated setup_required: windows elevated sandbox setup has not run";
+  const event = { kind: "tool", name: "powershell", status: "failed", resultRaw, resultView: null } as const;
+  expect(isWindowsPanelSandboxFailure(event)).toBe(true);
+  expect(isWindowsPanelSandboxFailure({ ...event, status: "completed" })).toBe(false);
+  expect(isWindowsPanelSandboxFailure({ ...event, name: "read_file" })).toBe(false);
+  expect(isWindowsPanelSandboxFailure({ ...event, resultRaw: "PowerShell exited with code 7" })).toBe(false);
+  expect(isWindowsPanelSandboxFailure({ kind: "assistant_final", text: resultRaw, terminal: "completed" })).toBe(false);
+});
 
 const flag = JSON.stringify({ payload_type: "runtime.session", payload: { kind: "security_mode", event: { approval: "disabled", sandbox: "normal" } } });
 const policy = (mode: string, outcome = "completed") => JSON.stringify({ payload_type: "runtime.approval_reconfigure", payload: { record: { effective_mode: mode, apply_outcome: outcome } } });

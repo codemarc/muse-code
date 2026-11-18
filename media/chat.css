@@ -1181,6 +1181,11 @@ textarea:disabled {
   white-space: nowrap;
 }
 
+.model-menu .menu-label {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .menu-detail {
   font-size: 11px;
   color: var(--muse-muted);

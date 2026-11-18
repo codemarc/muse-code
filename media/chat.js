@@ -84,6 +84,8 @@
   let mentionedFiles = [];
   let lastConfig = {};
   let menuEl = null;
+  let modelRequestId = 0;
+  let modelCatalogOptions = null;
   let historyAnchor = null;
   let sessionPicker = null;
   let sessionRequestId = 0;
@@ -1114,6 +1116,7 @@
         }
         const btn = document.createElement("button");
         btn.type = "button";
+        btn.value = item.value;
         btn.className = "menu-item" + (item.checked ? " checked" : "");
         if (typeof btn.setAttribute === "function") {
           btn.setAttribute("role", "menuitemradio");
@@ -1205,23 +1208,34 @@
   }
 
   function openModelMenu() {
+    if (menuEl && menuEl.__anchor === modelPill) {
+      closeMenu();
+      return;
+    }
+    renderModelMenu(lastConfig.useEchoProvider ? "" : "Loading Muse model catalog…");
+    if (!lastConfig.useEchoProvider) {
+      vscode.postMessage({ type: "listModels", requestId: ++modelRequestId });
+    }
+  }
+
+  function renderModelMenu(status) {
     const echoOn = !!lastConfig.useEchoProvider;
     const current = lastConfig.model || "";
-    const options = lastConfig.modelOptions || [{ value: "", label: "Auto" }];
+    const options = modelCatalogOptions || lastConfig.modelOptions || [{ value: "", label: "Auto" }];
     const items = echoOn
       ? [
           { label: "Echo (offline test)", detail: "Replies repeat your prompt; no Meta API", value: "__echo_on__", checked: true },
           { separator: true },
           { label: "Use Meta models", detail: "Turn off echo and pick a model", value: "__echo_off__" },
         ]
-      : options
+      : (status ? [{ empty: true, label: status }] : []).concat(options
           .map(function (o) {
             return { label: o.label, detail: o.detail, value: o.value, checked: o.value === current };
           })
           .concat([
             { separator: true },
             { label: "Echo (offline test)", detail: "No API calls; replies repeat your prompt", value: "__echo_on__" },
-          ]);
+          ]));
     openMenu(modelPill, "Model", items, function (value) {
       if (value === "__echo_on__" || value === "__echo_off__") {
         if ((value === "__echo_on__") !== echoOn) {
@@ -1231,6 +1245,7 @@
       }
       vscode.postMessage({ type: "setSetting", key: "model", value: value });
     });
+    menuEl.classList.add("model-menu");
   }
 
   function openEffortMenu() {
@@ -1952,6 +1967,21 @@
           chatFormat = msg.chatFormat;
         }
         break;
+      case "modelCatalog": {
+        if (msg.requestId !== modelRequestId || lastConfig.useEchoProvider) break;
+        modelCatalogOptions = Array.isArray(msg.options) ? msg.options : null;
+        if (menuEl && menuEl.__anchor === modelPill) {
+          const focused = document.activeElement;
+          const focusedValue = focused && menuEl.contains(focused) ? focused.value : undefined;
+          closeMenu();
+          renderModelMenu(modelCatalogOptions ? "" : "Catalog unavailable. Showing saved and default choices.");
+          if (focusedValue !== undefined) {
+            const button = Array.from(menuEl.querySelectorAll(".menu-item")).find((item) => item.value === focusedValue);
+            (button || modelPill).focus();
+          }
+        }
+        break;
+      }
       case "approvals":
         renderApprovals(Array.isArray(msg.items) ? msg.items : []);
         break;

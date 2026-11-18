@@ -1,5 +1,6 @@
 import { open } from "node:fs/promises";
 import type { ExecutionMode } from "./executionMode";
+import type { MuseUiEvent } from "./museJsonl";
 
 export type SessionApprovalPolicy = "interactive" | "headless" | "unknown";
 
@@ -59,4 +60,9 @@ export function needsApprovalCapableMode(mode: ExecutionMode, policy: SessionApp
 export function executionModeTarget(inspected: { workspaceFolderValue?: unknown; workspaceValue?: unknown } | undefined): "folder" | "workspace" | "global" {
   return inspected?.workspaceFolderValue !== undefined ? "folder"
     : inspected?.workspaceValue !== undefined ? "workspace" : "global";
+}
+export function isWindowsPanelSandboxFailure(event: MuseUiEvent): boolean {
+  return event.kind === "tool" && event.status === "failed" &&
+    /^(?:powershell|pwsh|shell)$/i.test(event.name) &&
+    /^(?:tool failed:\s*)?(?:environment failure:\s*)?sandbox enforcement unavailable:\s*windows_elevated setup_required\b/i.test(event.resultRaw.trim());
 }

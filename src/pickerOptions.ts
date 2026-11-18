@@ -1,10 +1,4 @@
-/**
- * Options for the in-chat model / effort / mode pickers.
- *
- * Muse has no command that lists its model catalog (`muse model-profile show`
- * accepts any id), so the model list is: a short known list, plus every model
- * named in the user's Muse settings.json, plus the currently configured one.
- */
+/** Options for the in-chat model and effort pickers. */
 
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -69,16 +63,18 @@ export function readMuseSettingsRaw(path = museSettingsPath()): string | null {
   }
 }
 
-export function buildModelOptions(current: string, museSettingsRaw: string | null): PickerOption[] {
-  const ids = new Set<string>();
-  for (const id of [...KNOWN_MODELS, ...modelsFromMuseSettings(museSettingsRaw), current.trim()]) {
-    if (id && MODEL_ID_RE.test(id)) {
-      ids.add(id);
-    }
+export function buildModelOptions(current: string, museSettingsRaw: string | null, catalog: PickerOption[] = []): PickerOption[] {
+  const options = new Map<string, PickerOption>();
+  for (const option of catalog) {
+    if (!options.has(option.value)) options.set(option.value, option);
+  }
+  const defaults = catalog.length ? [] : KNOWN_MODELS;
+  for (const id of [...defaults, ...modelsFromMuseSettings(museSettingsRaw), current.trim()].sort()) {
+    if (MODEL_ID_RE.test(id) && !options.has(id)) options.set(id, { value: id, label: id });
   }
   return [
     { value: "", label: "Auto", detail: "Muse default" },
-    ...[...ids].sort().map((id) => ({ value: id, label: id })),
+    ...options.values(),
     { value: CUSTOM_MODEL_VALUE, label: "Other model…", detail: "Type a model id" },
   ];
 }

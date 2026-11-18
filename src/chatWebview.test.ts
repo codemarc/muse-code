@@ -1340,6 +1340,28 @@ describe("editor tab header, banner, and pills", () => {
     ]);
   });
 
+  test("the open model picker loads the live catalog and selects a new model", () => {
+    const chat = loadChat();
+    chat.send({ type: "config", model: "", modelOptions: [{ value: "", label: "Auto" }] });
+    chat.modelPill.click();
+    expect(chat.posted.at(-1)).toEqual({ type: "listModels", requestId: 1 });
+    chat.send({
+      type: "modelCatalog",
+      requestId: 1,
+      options: [{ value: "", label: "Auto" }, { value: "muse-ember-1.0", label: "Muse Ember" }],
+    });
+    chat.lastMenu().findItem("Muse Ember").click();
+    expect(chat.posted.at(-1)).toEqual({ type: "setSetting", key: "model", value: "muse-ember-1.0" });
+    chat.modelPill.click();
+    chat.modelPill.click();
+    chat.send({ type: "modelCatalog", requestId: 2, options: null });
+    expect(() => chat.lastMenu()).toThrow("no menu open");
+    chat.modelPill.click();
+    chat.send({ type: "modelCatalog", requestId: 3, options: null });
+    expect(chat.lastMenu().el.querySelector(".menu-empty")?.textContent).toContain("Catalog unavailable");
+    expect(chat.lastMenu().findItem("Auto")).toBeDefined();
+  });
+
   test("pills open pickers that post setSetting", () => {
     const chat = loadChat();
     chat.send({

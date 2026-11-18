@@ -41,7 +41,7 @@ import {
   normalizeExecutionMode,
   type ExecutionMode,
 } from "./executionMode";
-import { executionModeTarget, needsApprovalCapableMode, readSessionApprovalPolicy } from "./sessionExecution";
+import { executionModeTarget, isWindowsPanelSandboxFailure, needsApprovalCapableMode, readSessionApprovalPolicy } from "./sessionExecution";
 import {
   MUSE_AI_URL,
   selectHandoffTranscript,
@@ -64,6 +64,7 @@ import { PanelQuestions } from "./panelQuestions";
 import { startMusePanel } from "./musePanel";
 import { workspaceLease } from "./workspaceLease";
 import { runSessionAction, validateSessionName } from "./sessionActions";
+import { listModelOptions } from "./modelCatalog";
 import type { SessionStore } from "./sessionStore";
 import { formatToolResult } from "./toolResultFormat";
 import {
@@ -254,6 +255,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         case "setSetting":
           await this.setSettingFromWebview(String(msg.key ?? ""), String(msg.value ?? ""));
+          break;
+        case "listModels":
+          await this.postModelCatalog(webview, Number(msg.requestId));
           break;
         case "cycleMode":
           await this.cycleExecutionMode();
@@ -516,6 +520,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!conflict || this.run || this.preparing || this.checkpointBusy || sessionId !== this.sessions.getSessionId() || mode !== this.currentExecutionMode()) return;
     if (action === "panel") await this.updateExecutionMode("panel");
     else if (action === "newSession") this.newSession("Started a session for the selected mode. Your draft is ready to send");
+  }
+
+  private async offerWindowsCompatibility(sessionId: string, generation: number, folderUri: string | undefined): Promise<void> {
+    const isCurrent = () => !this.disposed && !this.run && !this.preparing && !this.checkpointBusy &&
+      generation === this.runGeneration && sessionId === this.sessions.getSessionId() &&
+      folderUri === this.folders.getFolder()?.uri.toString() && this.currentExecutionMode() === "panel";
+    if (!isCurrent()) return;
+    const action = "Switch to Windows compatibility";
+    const choice = await vscode.window.showWarningMessage(
+      "Muse Panel could not start the Windows shell sandbox. Windows compatibility can run sandboxed shell commands. You may need to start a new session after switching.",
+      action,
+    );
+    if (choice === action && isCurrent()) await this.updateExecutionMode("windows");
   }
 
   refreshStatusBar(): void {
@@ -876,6 +893,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     await this.resumeSession(sessionId);
   }
 
+  private async postModelCatalog(webview: vscode.Webview, requestId: number): Promise<void> {
+    const settings = readMuseSettings();
+    if (!Number.isSafeInteger(requestId) || settings.useEchoProvider) return;
+    const binary = resolveMuseBinary(settings.executablePath);
+    try {
+      if (!binary.ok) throw new Error(binary.error);
+      const catalog = await listModelOptions(binary.path);
+      if (!this.disposed && this.webviews.has(webview)) {
+        const options = buildModelOptions(readMuseSettings().model, readMuseSettingsRaw(), catalog);
+        await webview.postMessage({ type: "modelCatalog", requestId, options });
+      }
+    } catch {
+      if (!this.disposed && this.webviews.has(webview)) {
+        await webview.postMessage({ type: "modelCatalog", requestId, options: null });
+      }
+    }
+  }
+
   private async setSettingFromWebview(key: string, value: string): Promise<void> {
     const cfg = vscode.workspace.getConfiguration("muse");
     if (key === "model") {
@@ -1214,6 +1249,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     let stderr = "";
     const generation = ++this.runGeneration;
+    const folderUri = this.folders.getFolder()?.uri.toString();
+    let panelSandboxFailed = false;
     try {
       const start = panelMode ? (options: Parameters<typeof startMuseExec>[0]) => {
         const settings = readMuseSettings();
@@ -1227,7 +1264,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         workspacePath,
         sessionId,
         onEvent: (event) => {
-          if (generation === this.runGeneration) this.handleEvent(event);
+          if (generation !== this.runGeneration) return;
+          if (panelMode && process.platform === "win32" && isWindowsPanelSandboxFailure(event)) {
+            panelSandboxFailed = true;
+          }
+          this.handleEvent(event);
         },
         onRejectedExtraArgs: (rejected) => {
           this.post({
@@ -1274,6 +1315,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
           this.sessions.saveTranscript(sessionId, this.liveTranscript);
           void this.refreshSessionCompatibility();
+          if (panelSandboxFailed && !signal) void this.offerWindowsCompatibility(sessionId, generation, folderUri);
           void (async () => {
             if (code === 0) await this.hydrateTranscript({ paintCacheFirst: false });
             await this.postTurnReviews();
