@@ -18,12 +18,12 @@ function toChoice(folder: vscode.WorkspaceFolder): FolderChoice {
 }
 
 export class WorkspaceFolderStore {
-  constructor(private readonly context: vscode.ExtensionContext) {}
+  constructor(private readonly context: vscode.ExtensionContext, private readonly folderKey = FOLDER_KEY) {}
 
   /** Current selection if valid; single-root auto-selects; multi-root may be unset. */
   getFolder(): FolderChoice | undefined {
     const folders = vscode.workspace.workspaceFolders ?? [];
-    const stored = this.context.workspaceState.get<string>(FOLDER_KEY);
+    const stored = this.context.workspaceState.get<string>(this.folderKey);
     const match = matchStoredFolder(
       folders.map((f) => ({
         name: f.name,
@@ -80,10 +80,17 @@ export class WorkspaceFolderStore {
   }
 
   async clear(): Promise<void> {
-    await this.context.workspaceState.update(FOLDER_KEY, undefined);
+    await this.context.workspaceState.update(this.folderKey, undefined);
+  }
+
+  async setFolder(uri: vscode.Uri): Promise<void> {
+    if (!vscode.workspace.workspaceFolders?.some((f) => f.uri.toString() === uri.toString())) {
+      throw new Error("The branch workspace is no longer open.");
+    }
+    await this.persist(uri);
   }
 
   private async persist(uri: vscode.Uri): Promise<void> {
-    await this.context.workspaceState.update(FOLDER_KEY, uri.toString());
+    await this.context.workspaceState.update(this.folderKey, uri.toString());
   }
 }

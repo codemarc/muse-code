@@ -1,4 +1,6 @@
 import * as vscode from "vscode";
+import { isUnderWorkspace } from "./canvasFile";
+import { checkpointText, TurnCheckpointStore, type TurnCheckpoint } from "./turnCheckpoints";
 import type { CanvasPanel, CanvasPayload } from "./canvasPanel";
 import {
   buildAttachedPrompt,
@@ -32,12 +34,14 @@ import {
   mentionSearchGlob,
   type MentionCandidate,
 } from "./fileMentions";
-import { parsePorcelain, readGitSnapshot, reviewSince, runGit } from "./gitReview";
+import { parsePorcelain, runGit } from "./gitReview";
 import {
   executionModeDescription,
   EXECUTION_MODE_LABELS,
   normalizeExecutionMode,
+  type ExecutionMode,
 } from "./executionMode";
+import { executionModeTarget, needsApprovalCapableMode, readSessionApprovalPolicy } from "./sessionExecution";
 import {
   MUSE_AI_URL,
   selectHandoffTranscript,
@@ -49,13 +53,28 @@ import {
   deleteMuseSessions,
   formatSessionPickLabel,
   listMuseSessionsForWorkspace,
+  retainedBranchForWorkspace,
+  type MuseSessionSummary,
 } from "./museSessions";
 import { isSupportedPlatform, unsupportedPlatformMessage } from "./platform";
 import { buildChatMarkdownHtml } from "./previewContent";
 import { ensureHeadlessConsent } from "./safety";
+import { PanelApprovals } from "./panelApprovals";
+import { PanelQuestions } from "./panelQuestions";
+import { startMusePanel } from "./musePanel";
+import { workspaceLease } from "./workspaceLease";
+import { runSessionAction, validateSessionName } from "./sessionActions";
 import type { SessionStore } from "./sessionStore";
 import { formatToolResult } from "./toolResultFormat";
-import { appendLiveUiEvent, type TranscriptItem } from "./transcript";
+import {
+  buildEffortOptions,
+  buildModelOptions,
+  CUSTOM_MODEL_VALUE,
+  isValidEffort,
+  isValidModelId,
+  readMuseSettingsRaw,
+} from "./pickerOptions";
+import { appendLiveUiEvent, preserveStoppedTranscript, preserveToolMetadata, type TranscriptItem } from "./transcript";
 import { inspectWorkspaceRoot, relativeToWorkspace } from "./workspace";
 import type { WorkspaceFolderStore } from "./workspaceFolder";
 
@@ -63,23 +82,53 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "muse.chatView";
   private chatView: vscode.WebviewView | undefined;
   public static readonly editorViewType = "muse.chatPanel";
+  onDidFocus?: () => void;
+  onBranch?: (sessionId: string, folder: vscode.Uri) => void;
+  onSessionMetadataChanged?: () => void;
 
   private readonly webviews = new Set<vscode.Webview>();
   private run?: MuseRunHandle;
+  private readonly approvals = new PanelApprovals((items) => this.post({ type: "approvals", items }));
+  private readonly questions = new PanelQuestions((items) => this.post({ type: "questions", items }));
+  private runGeneration = 0;
   private editorPanel?: vscode.WebviewPanel;
   private readonly status: vscode.StatusBarItem;
   private readonly terminalOutput = new TerminalOutputStore();
   private liveTranscript: TranscriptItem[] = [];
   private hydrateEpoch = 0;
+  private preparing = false;
+  private sessionAction?: "rename" | "fork";
+  private disposed = false;
+  private checkpointBusy = false;
+  private compatibilityEpoch = 0;
+  private finishCheckpoint?: () => Promise<void>;
+  private static readonly checkpointDocuments = new Map<string, string>();
+  private readonly checkpointRegistration: vscode.Disposable;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly sessions: SessionStore,
     private readonly folders: WorkspaceFolderStore,
     private readonly canvasPanel: CanvasPanel,
+    private readonly checkpoints: TurnCheckpointStore,
     /** View id that is shown in this host (secondary side bar when supported). */
     private readonly chatViewId: string = ChatViewProvider.viewType,
+    private readonly chatIdentity?: { id: string; activate: () => void; closed: () => void },
   ) {
+    this.checkpointRegistration = chatIdentity ? new vscode.Disposable(() => {}) : vscode.workspace.registerTextDocumentContentProvider("muse-turn", {
+      provideTextDocumentContent: async (uri) => {
+        const cached = ChatViewProvider.checkpointDocuments.get(uri.toString());
+        if (cached !== undefined) return cached;
+        const folder = uri.fragment ? vscode.workspace.workspaceFolders?.find((f) => f.uri.fsPath === uri.fragment)?.uri : this.folders.getFolder()?.uri;
+        if (!folder || (uri.query !== "before" && uri.query !== "after")) return "Snapshot unavailable";
+        try {
+          const [id, ...parts] = uri.path.slice(1).split("/");
+          const turn = await this.checkpoints.load(folder.fsPath, id);
+          const file = turn.files.find((file) => file.path === parts.join("/"));
+          return file ? checkpointText(uri.query === "before" ? file.before : file.after) : "Snapshot unavailable";
+        } catch { return "Snapshot unavailable"; }
+      },
+    });
     this.status = vscode.window.createStatusBarItem(
       vscode.StatusBarAlignment.Right,
       100,
@@ -116,37 +165,101 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     webview.html = this.getHtml(webview);
 
     const messageSubscription = webview.onDidReceiveMessage(async (msg) => {
+      if (msg?.type && msg.type !== "ready") this.onDidFocus?.();
       switch (msg?.type) {
         case "ready":
-          this.post({
-            type: "session",
-            sessionId: this.sessions.getSessionId(),
-          });
+          this.post({ type: "questions", items: this.questions.list() });
+          this.post({ type: "chatIdentity", chatId: this.chatIdentity?.id ?? "sidebar" });
+          this.post({ type: "approvals", items: this.approvals.list() });
+          this.post({ type: "running", running: !!this.run });
+          this.post({ type: "sessionAction", busy: !!this.sessionAction, action: this.sessionAction });
+          this.postSession();
           this.postFolder();
           this.postConfig();
           await this.refreshSetup();
-          await this.hydrateTranscript({ paintCacheFirst: true });
+          if (this.run) this.post({ type: "history", items: this.enrichItemsForWebview(this.liveTranscript), source: "live" });
+          else await this.hydrateTranscript({ paintCacheFirst: true });
+          await this.postTurnReviews();
           break;
         case "submit":
-          await this.submitPrompt(
-            String(msg.prompt ?? ""),
-            sanitizeAttachments(msg.attachments),
-          );
+          try {
+            await this.submitPrompt(
+              String(msg.prompt ?? ""),
+              sanitizeAttachments(msg.attachments),
+            );
+          } finally {
+            webview.postMessage({ type: "submitFinished" });
+          }
           break;
         case "currentFileQuery":
           this.handleCurrentFileQuery(Number(msg.requestId ?? 0));
           break;
+        case "copyText":
+          try {
+            if (typeof msg.text !== "string" || msg.text.length > 2_000_000) throw new Error("Text is too large to copy.");
+            await vscode.env.clipboard.writeText(msg.text);
+            await webview.postMessage({ type: "copyResult", requestId: msg.requestId, ok: true });
+          } catch {
+            await webview.postMessage({ type: "copyResult", requestId: msg.requestId, ok: false });
+          }
+          break;
+        case "openTurnDiff":
+          await this.openTurnDiff(String(msg.turnId ?? ""), String(msg.path ?? ""));
+          break;
+        case "undoTurn":
+          await this.restoreTurn(String(msg.turnId ?? ""), "undo");
+          break;
+        case "redoTurn":
+          await this.restoreTurn(String(msg.turnId ?? ""), "redo");
+          break;
         case "stop":
           this.stop();
           break;
+        case "approvalDecision":
+          try {
+            this.approvals.decide(String(msg.approvalId ?? ""), Number(msg.sourceIndex), String(msg.choiceId ?? ""),
+              typeof msg.feedback === "string" ? msg.feedback.slice(0, 8000) : undefined);
+          } catch (error) {
+            this.post({ type: "error", text: error instanceof Error ? error.message : String(error) });
+            this.post({ type: "approvals", items: this.approvals.list() });
+          }
+          break;
+        case "questionAnswer":
+          try { await this.questions.answer(String(msg.userInputId ?? ""), msg.answers); }
+          catch (error) { this.post({ type: "error", text: error instanceof Error ? error.message : String(error) }); }
+          break;
         case "newSession":
-          this.newSession();
+          await vscode.commands.executeCommand("muse.newChat");
+          break;
+        case "activateChat":
+          this.chatIdentity?.activate();
           break;
         case "pickSession":
           await this.pickSession();
           break;
+        case "renameSession":
+          await this.renameConversation();
+          break;
+        case "forkSession":
+          await this.branchConversation();
+          break;
+        case "listSessions":
+          this.postSessionList(String(msg.query ?? ""), Number(msg.requestId ?? 0));
+          break;
+        case "resumeSession":
+          await this.resumeFromList(String(msg.sessionId ?? ""));
+          break;
+        case "cleanupSessions":
+          await this.cleanupSessions();
+          break;
+        case "setSetting":
+          await this.setSettingFromWebview(String(msg.key ?? ""), String(msg.value ?? ""));
+          break;
         case "cycleMode":
           await this.cycleExecutionMode();
+          break;
+        case "resolveSessionMode":
+          await this.resolveSessionMode(String(msg.sessionId ?? ""), String(msg.mode ?? ""), String(msg.action ?? ""));
           break;
         case "openSettings":
           await this.openSettings();
@@ -266,28 +379,56 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  private async publishTurnReview(
-    workspacePath: string,
-    before: Awaited<ReturnType<typeof readGitSnapshot>>,
-  ): Promise<void> {
+  private async postTurnReviews(): Promise<void> {
+    const folder = this.folders.getFolder();
+    if (!folder) return;
+    const sessionId = this.sessions.getSessionId();
     try {
-      const review = await reviewSince(workspacePath, before);
-      if (!review.markdown) {
-        return;
-      }
-      this.post({
-        type: "changes",
-        files: review.files,
-        markdown: review.markdown,
-      });
-      this.canvasPanel.show({
-        name: "Changed files",
-        resultView: review.markdown,
-        resultRaw: review.diff || review.markdown,
-      });
-    } catch {
-      // Review is best-effort and must not fail the chat run.
+      const turns = await this.checkpoints.list(folder.fsPath, sessionId);
+      if (sessionId !== this.sessions.getSessionId()) return;
+      this.post({ type: "turnReviews", turns: turns.map((turn) => ({
+        turnId: turn.id, prompt: turn.prompt, createdAt: turn.createdAt, undone: turn.state === "undone",
+        files: turn.files.map((file) => ({ path: file.path, status: file.before === null ? "A" : file.after === null ? "D" : "M" })),
+      })) });
+    } catch (err) { this.post({ type: "error", text: `Could not load turn checkpoints: ${String(err)}` }); }
+  }
+
+  private async openTurnDiff(id: string, path: string): Promise<void> {
+    const folder = this.folders.getFolder();
+    if (!folder) return;
+    try {
+      const turn = await this.checkpoints.load(folder.fsPath, id);
+      if (turn.sessionId !== this.sessions.getSessionId()) return;
+      const file = turn.files.find((file) => file.path === path);
+      if (!file) return;
+      const makeUri = (side: "before" | "after") => vscode.Uri.from({ scheme: "muse-turn", path: `/${turn.id}/${path}`, query: side, fragment: folder.fsPath });
+      const before = makeUri("before");
+      const after = makeUri("after");
+      ChatViewProvider.checkpointDocuments.set(before.toString(), checkpointText(file.before));
+      ChatViewProvider.checkpointDocuments.set(after.toString(), checkpointText(file.after));
+      await vscode.commands.executeCommand("vscode.diff", before, after, `${path} · Muse turn · Before ↔ After`, { preview: true });
+    } catch (err) { this.post({ type: "error", text: `Could not open turn diff: ${String(err)}` }); }
+  }
+
+  private async restoreTurn(id: string, action: "undo" | "redo"): Promise<void> {
+    if (this.run || this.preparing || this.checkpointBusy) {
+      this.post({ type: "error", text: "Wait for the current turn or checkpoint operation before restoring a turn." });
+      await this.postTurnReviews();
+      return;
     }
+    const folder = this.folders.getFolder();
+    if (!folder) return;
+    this.checkpointBusy = true;
+    let release: (() => void) | undefined;
+    try {
+      release = workspaceLease.acquire(folder.fsPath);
+      const turn = await this.checkpoints.load(folder.fsPath, id);
+      if (turn.sessionId !== this.sessions.getSessionId()) return;
+      const dirty = vscode.workspace.textDocuments.filter((doc) => doc.isDirty && doc.uri.scheme === "file").map((doc) => doc.uri.fsPath);
+      await this.checkpoints[action](folder.fsPath, id, dirty);
+      this.post({ type: "status", text: action === "undo" ? "Turn undone. Your pre-turn edits and Git index were preserved." : "Turn reapplied. Your pre-turn edits and Git index were preserved." });
+    } catch (err) { this.post({ type: "error", text: err instanceof Error ? err.message : String(err) }); }
+    finally { release?.(); this.checkpointBusy = false; await this.postTurnReviews(); }
   }
 
   /** Chip clicks and chat links both land in the main editor area. */
@@ -299,7 +440,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   postConfig(): void {
-    const cfg = vscode.workspace.getConfiguration("muse");
+    const cfg = vscode.workspace.getConfiguration("muse", this.folders.getFolder()?.uri);
     const executionMode = normalizeExecutionMode(
       cfg.get<string>("executionMode", "headless"),
     );
@@ -319,15 +460,67 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       executionModeDescription: executionModeDescription(executionMode),
       model: cfg.get<string>("model", ""),
       reasoningEffort: cfg.get<string>("reasoningEffort", ""),
+      modelOptions: buildModelOptions(cfg.get<string>("model", ""), readMuseSettingsRaw()),
+      effortOptions: buildEffortOptions(),
+      useEchoProvider: cfg.get<boolean>("useEchoProvider", false),
     });
     this.refreshStatusBar();
+    void this.refreshSessionCompatibility();
+  }
+
+  private currentExecutionMode(): ExecutionMode {
+    return normalizeExecutionMode(vscode.workspace.getConfiguration("muse", this.folders.getFolder()?.uri).get("executionMode"));
+  }
+
+  private async sessionModeConflict(sessionId: string, mode: ExecutionMode) {
+    if (mode !== "windows" && mode !== "headless") return null;
+    let policy: "interactive" | "headless" | "unknown" = "unknown";
+    try {
+      const listed = this.listSessionsForCurrentFolder(sessionId);
+      if (Array.isArray(listed)) {
+        const stored = listed.find((session) => session.sessionId === sessionId);
+        if (!stored && !this.sessions.getCachedTranscript(sessionId).length) return null;
+        policy = await readSessionApprovalPolicy(stored?.sessionLogPath ?? null);
+      }
+    } catch { /* Unverifiable existing policy must not launch a headless run. */ }
+    if (!needsApprovalCapableMode(mode, policy)) return null;
+    return { sessionId, mode, text: policy === "interactive"
+      ? "This session has a stored approval policy that needs Panel approvals. This mode cannot show those requests. Keep this session in Panel approvals, or start a new session for the selected mode. Your draft is kept; the previous session stays in history."
+      : "This session's approval policy could not be verified. Use Panel approvals, or start a new session for the selected mode. Your draft is kept; the previous session stays in history." };
+  }
+
+  private async refreshSessionCompatibility(): Promise<void> {
+    const epoch = ++this.compatibilityEpoch;
+    const sessionId = this.sessions.getSessionId();
+    const mode = this.currentExecutionMode();
+    const conflict = this.run ? null : await this.sessionModeConflict(sessionId, mode);
+    if (this.disposed || epoch !== this.compatibilityEpoch || sessionId !== this.sessions.getSessionId() || mode !== this.currentExecutionMode()) return;
+    this.post({ type: "sessionCompatibility", sessionId, mode, conflict });
+  }
+
+  private async updateExecutionMode(mode: ExecutionMode): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration("muse", this.folders.getFolder()?.uri);
+    const scope = executionModeTarget(cfg.inspect("executionMode"));
+    try {
+      await cfg.update("executionMode", mode, scope === "folder" ? vscode.ConfigurationTarget.WorkspaceFolder
+        : scope === "workspace" ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global);
+    } catch (error) {
+      this.post({ type: "error", text: `Could not change execution mode. Your draft is kept. ${error instanceof Error ? error.message : String(error)}` });
+    }
+    this.postConfig();
+  }
+
+  private async resolveSessionMode(sessionId: string, mode: string, action: string): Promise<void> {
+    if (this.run || this.preparing || this.checkpointBusy || sessionId !== this.sessions.getSessionId() || mode !== this.currentExecutionMode()) return;
+    const conflict = await this.sessionModeConflict(sessionId, this.currentExecutionMode());
+    if (!conflict || this.run || this.preparing || this.checkpointBusy || sessionId !== this.sessions.getSessionId() || mode !== this.currentExecutionMode()) return;
+    if (action === "panel") await this.updateExecutionMode("panel");
+    else if (action === "newSession") this.newSession("Started a session for the selected mode. Your draft is ready to send");
   }
 
   refreshStatusBar(): void {
-    const cfg = vscode.workspace.getConfiguration("muse");
-    const executionMode = normalizeExecutionMode(
-      cfg.get<string>("executionMode", "headless"),
-    );
+    if (this.chatIdentity) { this.status.hide(); return; }
+    const executionMode = this.currentExecutionMode();
     const label = EXECUTION_MODE_LABELS[executionMode];
     this.status.text = buildMuseStatusText({
       running: Boolean(this.run),
@@ -385,17 +578,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   async cycleExecutionMode(): Promise<void> {
-    const cfg = vscode.workspace.getConfiguration("muse");
-    const current = normalizeExecutionMode(
-      cfg.get<string>("executionMode", "headless"),
-    );
-    const next = current === "headless" ? "interactive" : "headless";
-    await cfg.update(
-      "executionMode",
-      next,
-      vscode.ConfigurationTarget.Global,
-    );
-    this.postConfig();
+    const current = this.currentExecutionMode();
+    const next = current === "panel" ? "headless" : current === "headless" ? "interactive" : "panel";
+    await this.updateExecutionMode(next);
   }
 
   expandAll(): void {
@@ -466,35 +651,55 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       },
     );
     panel.iconPath = vscode.Uri.joinPath(this.extensionUri, "media", "muse.svg");
+    this.restorePanel(panel);
+  }
+
+  restorePanel(panel: vscode.WebviewPanel): void {
     this.editorPanel = panel;
     const dispose = this.attachWebview(panel.webview);
+    panel.onDidChangeViewState(() => { if (panel.active) this.chatIdentity?.activate(); });
+    if (panel.active) this.chatIdentity?.activate();
     panel.onDidDispose(() => {
       dispose();
       if (this.editorPanel === panel) {
         this.editorPanel = undefined;
       }
+      this.chatIdentity?.closed();
     });
   }
 
-  newSession(): void {
+  newSession(reason?: string): void {
+    if (this.preparing) return;
     this.stop();
     this.hydrateEpoch += 1;
     const id = this.sessions.newSession();
     this.liveTranscript = [];
-    this.post({ type: "session", sessionId: id });
+    this.postSession();
     this.post({ type: "history", items: [], source: "new" });
     this.post({
       type: "status",
-      text: `New session ${id.slice(0, 8)}…`,
+      text: reason ? `${reason} (${id.slice(0, 8)})` : `New session ${id.slice(0, 8)}…`,
     });
     this.refreshStatusBar();
+    void this.refreshSessionCompatibility();
   }
 
   stop(): void {
     if (this.run) {
+      const stoppedRun = this.run;
+      const finish = this.finishCheckpoint;
+      this.runGeneration += 1;
+      if (finish) {
+        this.checkpointBusy = true;
+        const finalize = () => { void finish().finally(() => { this.checkpointBusy = false; }); };
+        if (stoppedRun.settled) void stoppedRun.settled.then(finalize, finalize);
+        else stoppedRun.child?.once("close", finalize);
+      }
       this.run.stop();
       this.run = undefined;
       this.setRunning(false);
+      this.liveTranscript.push({ type: "status", text: "Stopped" });
+      this.sessions.saveTranscript(this.sessions.getSessionId(), this.liveTranscript);
       this.post({ type: "status", text: "Stopped" });
       this.post({ type: "running", running: false });
     }
@@ -507,6 +712,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   async selectWorkspaceFolder(): Promise<void> {
+    if (this.preparing || this.run || this.checkpointBusy) return;
     const choice = await this.folders.resolveFolder({ forcePick: true });
     if (!choice) {
       return;
@@ -520,8 +726,193 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     );
   }
 
+  /** Sessions for the in-chat history dropdown (same source as the quick pick). */
+  private listSessionsForCurrentFolder(query = ""): MuseSessionSummary[] | { error: string } {
+    const folder = this.folders.getFolder() ?? vscode.workspace.workspaceFolders?.[0];
+    if (!folder) {
+      return { error: "Open a folder to browse Muse sessions." };
+    }
+    const root = inspectWorkspaceRoot(folder.uri.fsPath);
+    if (!root.ok) {
+      return { error: root.error };
+    }
+    const labels = this.sessions.getLabels(root.path);
+    const found = new Map(listMuseSessionsForWorkspace(root.path, { limit: 40, query }).map((s) => [s.sessionId, s]));
+    for (const [id, label] of Object.entries(labels)) {
+      if (!label.parent || found.has(id)) continue;
+      const branch = retainedBranchForWorkspace(root.path, id, label.parent);
+      if (branch && (!query || [id, label.name, branch.firstUserPrompt ?? ""].join("\n").toLowerCase().includes(query.toLowerCase()))) found.set(id, branch);
+    }
+    // Search custom names before the recent-result limit, still validating each id's workspace.
+    if (query) for (const [id, label] of Object.entries(labels)) {
+      if (label.name.toLowerCase().includes(query.toLowerCase())) {
+        for (const s of listMuseSessionsForWorkspace(root.path, { limit: 1, query: id })) {
+          if (s.sessionId === id) found.set(id, s);
+        }
+      }
+    }
+    return [...found.values()].map((s) => ({ ...s, title: labels[s.sessionId]?.name || s.title }))
+      .sort((a, b) => b.updatedAtUs - a.updatedAtUs).slice(0, 40);
+  }
+
+  /** Header: session id plus its title from the Muse index (first prompt for new chats). */
+  postSession(): void {
+    const sessionId = this.sessions.getSessionId();
+    let title = "";
+    const list = this.listSessionsForCurrentFolder(sessionId);
+    if (Array.isArray(list)) {
+      const hit = list.find((s) => s.sessionId === sessionId);
+      if (hit) {
+        title = stripAttachedContext(hit.title || hit.firstUserPrompt || "").display.trim();
+      }
+    }
+    const folder = this.folders.getFolder();
+    const label = folder ? this.sessions.getLabels(folder.fsPath)[sessionId] : undefined;
+    title = label?.name || title;
+    this.post({ type: "session", sessionId, title: title.slice(0, 120), parentSessionId: label?.parent });
+    if (this.editorPanel) this.editorPanel.title = title.slice(0, 50) || `Muse · ${sessionId.slice(0, 8)}`;
+  }
+
+  async renameConversation(): Promise<void> {
+    if (this.run || this.preparing || this.checkpointBusy) {
+      this.post({ type: "error", text: "Wait for the current Muse operation to finish before renaming." }); return;
+    }
+    const id = this.sessions.getSessionId();
+    const folder = this.folders.getFolder();
+    if (!folder) return;
+    const value = await vscode.window.showInputBox({ title: "Rename Muse conversation",
+      prompt: "Saved in this VS Code workspace. Muse CLI names stay unchanged.",
+      value: this.sessions.getLabels(folder.fsPath)[id]?.name ?? "",
+      validateInput: validateSessionName, ignoreFocusOut: true });
+    if (value === undefined || this.sessions.getSessionId() !== id || this.folders.getFolder()?.fsPath !== folder.fsPath) return;
+    const error = validateSessionName(value);
+    if (error) { this.post({ type: "error", text: error }); return; }
+    if (this.run || this.preparing || this.checkpointBusy || this.disposed) return;
+    try {
+      await this.sessions.saveLabel(folder.fsPath, id, value.trim());
+      this.onSessionMetadataChanged?.(); this.postSession();
+    } catch (error) {
+      this.post({ type: "error", text: `Could not save conversation name: ${error instanceof Error ? error.message : String(error)}` });
+    }
+  }
+
+  async branchConversation(): Promise<void> {
+    await this.conversationAction();
+  }
+
+  private async conversationAction(): Promise<void> {
+    const action = "fork";
+    if (this.run || this.preparing || this.checkpointBusy) {
+      this.post({ type: "error", text: "Wait for the current Muse operation to finish before changing this conversation." }); return;
+    }
+    const folder = this.folders.getFolder();
+    if (!folder) return;
+    const root = inspectWorkspaceRoot(folder.fsPath);
+    if (!root.ok) { this.post({ type: "error", text: root.error }); return; }
+    const source = this.sessions.getSessionId();
+    const listed = this.listSessionsForCurrentFolder(source);
+    if (!Array.isArray(listed) || !listed.some((s) => s.sessionId === source)) {
+      this.post({ type: "error", text: "Send a first message before branching this conversation." }); return;
+    }
+    let release: (() => void) | undefined;
+    this.preparing = true;
+    this.sessionAction = action;
+    this.post({ type: "sessionAction", busy: true, action });
+    try {
+      release = workspaceLease.acquire(root.path);
+      const settings = readMuseSettings();
+      const binary = resolveMuseBinary(settings.executablePath);
+      if (!binary.ok) throw new Error(binary.error);
+      const result = await runSessionAction({ binary: binary.path, workspacePath: root.path,
+        sessionId: source, trustWorkspace: settings.trustWorkspace, echo: settings.useEchoProvider });
+      const sourceName = this.sessions.getLabels(root.path)[source]?.name || listed.find((s) => s.sessionId === source)?.title || "Muse";
+      await this.sessions.saveLabel(root.path, result.sessionId, `Branch · ${sourceName}`.slice(0, 120), source);
+      if (!this.disposed) this.onBranch?.(result.sessionId, folder.uri);
+    } catch (error) {
+      this.post({ type: "error", text: `Conversation branch failed: ${error instanceof Error ? error.message : String(error)}. Your draft and source conversation are kept.` });
+    } finally {
+      release?.(); this.preparing = false; this.sessionAction = undefined;
+      this.post({ type: "sessionAction", busy: false, action });
+    }
+  }
+
+  postSessionList(query = "", requestId = 0): void {
+    query = query.trim().slice(0, 256);
+    const list = this.listSessionsForCurrentFolder(query);
+    const current = this.sessions.getSessionId();
+    if (!Array.isArray(list)) {
+      this.post({ type: "sessionList", requestId, query, items: [], error: list.error });
+      return;
+    }
+    this.post({
+      type: "sessionList",
+      requestId,
+      query,
+      limit: 40,
+      items: list.map((s) => ({
+        id: s.sessionId,
+        title: (
+          stripAttachedContext(s.title || s.firstUserPrompt || "").display.trim() ||
+          s.sessionId.slice(0, 8)
+        ).slice(0, 120),
+        preview: stripAttachedContext(s.firstUserPrompt || "").display.trim().slice(0, 200),
+        updatedMs: s.updatedAtUs > 0 ? Math.round(s.updatedAtUs / 1000) : 0,
+        turns: s.promptCount,
+        current: s.sessionId === current,
+      })),
+    });
+  }
+
+  private async resumeFromList(sessionId: string): Promise<void> {
+    if (this.run || this.preparing || this.checkpointBusy) {
+      void vscode.window.showWarningMessage("Stop the current Muse run first.");
+      return;
+    }
+    const list = this.listSessionsForCurrentFolder(sessionId);
+    // Only resume ids the index actually lists for this folder (webview input is untrusted).
+    if (!Array.isArray(list) || !list.some((s) => s.sessionId === sessionId)) {
+      return;
+    }
+    await this.resumeSession(sessionId);
+  }
+
+  private async setSettingFromWebview(key: string, value: string): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration("muse");
+    if (key === "model") {
+      let model = value;
+      if (model === CUSTOM_MODEL_VALUE) {
+        const typed = await vscode.window.showInputBox({
+          title: "Muse model",
+          prompt: "Model id passed to muse exec --model (empty = Muse default)",
+          value: cfg.get<string>("model", ""),
+          validateInput: (v) => (isValidModelId(v.trim()) ? undefined : "Letters, digits, . _ : - only"),
+        });
+        if (typed === undefined) {
+          return;
+        }
+        model = typed.trim();
+      }
+      if (isValidModelId(model)) {
+        await cfg.update("model", model, vscode.ConfigurationTarget.Global);
+      }
+      return;
+    }
+    if (key === "reasoningEffort" && isValidEffort(value)) {
+      await cfg.update("reasoningEffort", value, vscode.ConfigurationTarget.Global);
+      return;
+    }
+    if (key === "useEchoProvider" && (value === "true" || value === "false")) {
+      // The config listener starts a new session: Muse will not switch providers mid-session.
+      await cfg.update("useEchoProvider", value === "true", vscode.ConfigurationTarget.Global);
+      return;
+    }
+    if (key === "executionMode" && (value === "headless" || value === "interactive" || value === "panel" || value === "windows")) {
+      await this.updateExecutionMode(value);
+    }
+  }
+
   async pickSession(): Promise<void> {
-    if (this.run) {
+    if (this.run || this.preparing || this.checkpointBusy) {
       void vscode.window.showWarningMessage("Stop the current Muse run first.");
       return;
     }
@@ -536,7 +927,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    const sessions = listMuseSessionsForWorkspace(root.path, { limit: 40 });
+    const sessions = this.listSessionsForCurrentFolder();
+    if (!Array.isArray(sessions)) { void vscode.window.showErrorMessage(sessions.error); return; }
     const current = this.sessions.getSessionId();
     const items: (vscode.QuickPickItem & {
       sessionId?: string;
@@ -585,7 +977,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   async cleanupSessions(): Promise<void> {
-    if (this.run) {
+    if (this.run || this.preparing || this.checkpointBusy) {
       void vscode.window.showWarningMessage("Stop the current Muse run first.");
       return;
     }
@@ -671,11 +1063,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   async resumeSession(sessionId: string): Promise<void> {
+    if (this.preparing || this.checkpointBusy) return;
     this.stop();
     this.hydrateEpoch += 1;
     this.sessions.setSessionId(sessionId);
     this.liveTranscript = this.sessions.getCachedTranscript(sessionId);
-    this.post({ type: "session", sessionId });
+    this.postSession();
     this.post({
       type: "history",
       items: this.enrichItemsForWebview(this.liveTranscript),
@@ -683,12 +1076,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
     await this.hydrateTranscript({ paintCacheFirst: false });
     this.refreshStatusBar();
+    void this.refreshSessionCompatibility();
     void vscode.window.showInformationMessage(
       `Resumed Muse session ${sessionId.slice(0, 8)}…`,
     );
   }
 
-  async submitPrompt(prompt: string, attachments: AttachmentRequest[] = []): Promise<void> {
+  async submitPrompt(prompt: string, attachments: AttachmentRequest[] = [], providerRetry = false): Promise<void> {
+    if (this.preparing || this.checkpointBusy) {
+      this.post({ type: "error", text: "Wait for the current checkpoint operation to finish." });
+      return;
+    }
+    this.preparing = true;
+    try { await this.startPrompt(prompt, attachments, providerRetry); }
+    finally { this.preparing = false; }
+  }
+
+  private async startPrompt(prompt: string, attachments: AttachmentRequest[], providerRetry: boolean): Promise<void> {
     const trimmed = prompt.trim();
     if (!trimmed && attachments.length === 0) {
       return;
@@ -729,13 +1133,59 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    if (!(await ensureHeadlessConsent())) {
+    const executionMode = this.currentExecutionMode();
+    const panelMode = executionMode === "panel";
+    if (executionMode === "windows" && process.platform !== "win32") {
+      this.post({ type: "error", text: "Windows compatibility requires native Windows. Choose Panel approvals or Headless on this system." });
       return;
     }
-
     const workspacePath = root.path;
+    if (panelMode) {
+      const current = this.sessions.getSessionId();
+      const stored = this.listSessionsForCurrentFolder(current);
+      if (current[14] !== "7" && Array.isArray(stored) && !stored.some((session) => session.sessionId === current)) {
+        this.newSession("Started a panel-compatible session");
+      }
+    }
     const sessionId = this.sessions.getSessionId();
-    const snapshot = await readGitSnapshot(workspacePath);
+    let checkpoint: TurnCheckpoint;
+    let release: (() => void) | undefined;
+    try {
+      release = workspaceLease.acquire(workspacePath);
+      const conflict = await this.sessionModeConflict(sessionId, executionMode);
+      if (conflict) {
+        this.post({ type: "sessionCompatibility", sessionId, mode: executionMode, conflict });
+        release();
+        return;
+      }
+      if (!panelMode && !(await ensureHeadlessConsent())) { release(); return; }
+      if (sessionId !== this.sessions.getSessionId() || executionMode !== this.currentExecutionMode()) {
+        release();
+        this.post({ type: "status", text: "Session or mode changed while preparing. Your draft is ready to send again." });
+        return;
+      }
+      if (vscode.workspace.textDocuments.some((doc) => doc.isDirty && doc.uri.scheme === "file" && isUnderWorkspace(doc.uri.fsPath, workspacePath))) {
+        throw new Error("Save your workspace editors before sending so the turn checkpoint includes your latest edits.");
+      }
+      checkpoint = await this.checkpoints.begin(workspacePath, sessionId, trimmed);
+      if (this.disposed || sessionId !== this.sessions.getSessionId() || executionMode !== this.currentExecutionMode()) {
+        await this.checkpoints.finish(checkpoint);
+        release();
+        return;
+      }
+    } catch (err) {
+      release?.();
+      this.post({ type: "error", text: `Could not create a safe turn checkpoint: ${err instanceof Error ? err.message : String(err)}` });
+      return;
+    }
+    let finishing: Promise<void> | undefined;
+    const finishCheckpoint = () => finishing ??= (async () => {
+      try { await this.checkpoints.finish(checkpoint); }
+      catch (err) { this.post({ type: "error", text: `Turn checkpoint could not be finalized; undo is unavailable: ${String(err)}` }); }
+      finally { release?.(); }
+      if (sessionId === this.sessions.getSessionId()) await this.postTurnReviews();
+    })();
+    this.finishCheckpoint = finishCheckpoint;
 
     // Expand context chips into inline blocks for the model. The transcript
     // keeps the expanded prompt (what the model saw); the sidebar shows the
@@ -756,16 +1206,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
     this.sessions.saveTranscript(sessionId, this.liveTranscript);
 
-    this.post({ type: "user", prompt: trimmed, attached: chipLabels });
+    this.sessions.saveRequestContext(sessionId, expanded, attachments);
+    this.post({ type: "submitAccepted" });
+    this.post({ type: "user", prompt: trimmed, attached: chipLabels, requestContext: attachments });
     this.post({ type: "running", running: true });
     this.setRunning(true);
 
+    let stderr = "";
+    const generation = ++this.runGeneration;
     try {
-      this.run = startMuseExec({
+      const start = panelMode ? (options: Parameters<typeof startMuseExec>[0]) => {
+        const settings = readMuseSettings();
+        const binary = resolveMuseBinary(settings.executablePath);
+        if (!binary.ok) throw new Error(binary.error);
+        return startMusePanel(options, binary.path, settings, this.approvals, this.questions);
+      } : startMuseExec;
+      this.run = start({
+        windowsShell: executionMode === "windows",
         prompt: expanded,
         workspacePath,
         sessionId,
-        onEvent: (event) => this.handleEvent(event),
+        onEvent: (event) => {
+          if (generation === this.runGeneration) this.handleEvent(event);
+        },
         onRejectedExtraArgs: (rejected) => {
           this.post({
             type: "status",
@@ -776,29 +1239,49 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           );
         },
         onStderr: (text) => {
+          if (generation !== this.runGeneration) return;
+          stderr = (stderr + text).slice(-16000);
           const line = text.trim();
-          if (line) {
+          if (line && !panelMode) {
             this.post({ type: "stderr", text: line });
           }
         },
-        onExit: (code, signal) => {
+        onExit: async (code, signal) => {
+          if (generation !== this.runGeneration) return;
+          this.checkpointBusy = true;
+          await finishCheckpoint();
+          this.checkpointBusy = false;
+          if (generation !== this.runGeneration) return;
           this.run = undefined;
           this.setRunning(false);
           this.post({ type: "running", running: false });
+          if (!providerRetry && !signal && code !== 0 && code !== null &&
+              /session[\s\S]*created with provider[\s\S]*refusing to resume with provider/i.test(stderr)) {
+            this.sessions.saveTranscript(sessionId, this.liveTranscript);
+            this.newSession("Provider changed; retrying in a new session");
+            void this.submitPrompt(prompt, attachments, true);
+            return;
+          }
+          // The index gets a title after the first turn.
+          this.postSession();
           if (signal === "SIGINT" || signal === "SIGTERM") {
             this.post({ type: "status", text: "Interrupted" });
           } else if (code !== 0 && code !== null) {
             this.post({
-              type: "status",
-              text: `muse exited with code ${code}`,
+              type: "error",
+              text: `Muse exited with code ${code}.${stderr.trim() ? ` ${stderr.trim().slice(-4000)}` : ""}`,
             });
           }
           this.sessions.saveTranscript(sessionId, this.liveTranscript);
-          void this.hydrateTranscript({ paintCacheFirst: false });
-          void this.publishTurnReview(workspacePath, snapshot);
+          void this.refreshSessionCompatibility();
+          void (async () => {
+            if (code === 0) await this.hydrateTranscript({ paintCacheFirst: false });
+            await this.postTurnReviews();
+          })();
         },
       });
     } catch (err) {
+      await finishCheckpoint();
       this.run = undefined;
       this.setRunning(false);
       this.post({ type: "running", running: false });
@@ -865,9 +1348,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     this.stop();
     this.terminalOutput.dispose();
     this.status.dispose();
+    this.checkpointRegistration.dispose();
   }
 
   private async hydrateTranscript(opts: {
@@ -895,8 +1381,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    const listed = listMuseSessionsForWorkspace(root.path, { limit: 80 });
-    const match = listed.find((s) => s.sessionId === sessionId);
+    const listed = this.listSessionsForCurrentFolder(sessionId);
+    const match = Array.isArray(listed) ? listed.find((s) => s.sessionId === sessionId) : undefined;
     if (!match && !opts.paintCacheFirst) {
       // Brand-new id with no Muse log yet.
       return;
@@ -916,6 +1402,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    loaded.items = preserveStoppedTranscript(this.liveTranscript, loaded.items);
+    loaded.items = preserveToolMetadata(this.liveTranscript, loaded.items);
     this.liveTranscript = loaded.items;
     this.sessions.saveTranscript(sessionId, loaded.items);
     this.post({
@@ -923,6 +1411,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       items: this.enrichItemsForWebview(loaded.items),
       source: loaded.source,
     });
+    await this.postTurnReviews();
   }
 
   private async buildMuseAiHandoffMarkdown(): Promise<string> {
@@ -1064,22 +1553,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private handleEvent(event: MuseUiEvent): void {
     this.liveTranscript = appendLiveUiEvent(this.liveTranscript, event);
     switch (event.kind) {
+      case "assistant_begin":
+        this.post({ type: "assistant_begin" });
+        break;
       case "user":
         // Already posted locally; skip duplicate from stream.
         break;
       case "assistant_delta":
         this.post({ type: "assistant_delta", text: event.text });
         break;
-      case "assistant_final":
+      case "assistant_final": {
+        const text = assistantDisplayText(event.text);
         this.post({
           type: "assistant_final",
-          text: event.text,
-          html: this.assistantHtml(event.text),
-          files: this.fileChips(event.text),
+          text,
+          html: this.assistantHtml(text),
+          files: this.fileChips(text),
           terminal: event.terminal,
           reason: event.reason ?? null,
         });
         break;
+      }
       case "status":
         this.post({ type: "status", text: event.text });
         break;
@@ -1091,6 +1585,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           resultView: event.resultView,
           files: this.fileChips(event.resultView || event.resultRaw),
           execMeta: event.execMeta,
+          status: event.status,
         });
         break;
       case "task":
@@ -1187,17 +1682,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private enrichItemForWebview(item: TranscriptItem): unknown {
     if (item.type === "user") {
       const stripped = stripAttachedContext(item.text);
-      if (stripped.attached.length === 0) {
-        return item;
-      }
-      return { type: "user", text: stripped.display, attached: stripped.attached };
+      return { type: "user", text: stripped.display, attached: stripped.attached,
+        requestContext: this.sessions.getRequestContext(this.sessions.getSessionId(), item.text) };
     }
     if (item.type === "assistant") {
+      const text = assistantDisplayText(item.text);
       return {
         type: "assistant",
-        text: item.text,
-        html: this.assistantHtml(item.text),
-        files: this.fileChips(item.text),
+        text,
+        html: this.assistantHtml(text),
+        files: this.fileChips(text),
       };
     }
     if (item.type !== "tool") {
@@ -1211,7 +1705,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       resultRaw: formatted.resultRaw,
       resultView: formatted.resultView,
       files: this.fileChips(formatted.resultView || formatted.resultRaw),
-      execMeta: formatted.execMeta,
+      execMeta: { ...formatted.execMeta, ...item.execMeta },
+      status: item.status,
     };
   }
 
@@ -1248,6 +1743,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const scriptUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.extensionUri, "media", "chat.js"),
     );
+    const brandUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "media", "muse-brand.svg"));
     const nonce = getNonce();
 
     return `<!DOCTYPE html>
@@ -1255,7 +1751,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';" />
+    content="default-src 'none'; img-src ${webview.cspSource}; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="stylesheet" href="${styleUri}" />
   <title>Muse CLI Chat</title>
@@ -1264,10 +1760,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <header class="top">
     <div class="top-row">
       <div class="brand">
-        <span class="brand-name">Muse</span>
-        <button type="button" id="session-btn" class="session-btn" title="Resume or start a Muse session">
-          <span id="session" class="session">————</span>
-        </button>
+        <img class="brand-mark" src="${brandUri}" width="30" height="30" alt="" aria-hidden="true" />
+        <span class="brand-name">Muse Code</span>
       </div>
       <div class="meta">
         <div id="folder" class="folder"></div>
@@ -1275,9 +1769,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       </div>
       <div class="toolbar" role="toolbar" aria-label="Session">
         <button type="button" id="toolbar-history" class="icon-btn" title="Session history" aria-label="Session history">${ICON_HISTORY}</button>
-        <button type="button" id="toolbar-new" class="icon-btn" title="New session" aria-label="New session">${ICON_PLUS}</button>
+        <button type="button" id="toolbar-new" class="icon-btn" title="New chat in editor" aria-label="New chat in editor">${ICON_PLUS}</button>
       </div>
     </div>
+    <div class="session-row">
+      <button type="button" id="session-btn" class="session-btn" title="Resume or start a Muse session">
+        <span id="session" class="session">New chat</span>
+      </button>
+      <div class="session-actions">
+        <button type="button" id="session-rename" class="session-action" title="Rename this conversation in this VS Code workspace">Rename</button>
+        <button type="button" id="session-fork" class="session-action" title="Branch all completed turns into an independent conversation. Workspace files stay as they are.">Branch</button>
+      </div>
+      <span id="session-parent" class="session-parent" hidden></span>
+    </div>
+    <div id="session-action-status" class="session-action-status" role="status" aria-live="polite" hidden></div>
   </header>
   <div id="mode-banner" class="mode-banner" hidden>
     <span id="mode-banner-text" class="mode-banner-text"></span>
@@ -1293,9 +1798,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     </div>
   </div>
   <main id="transcript" class="transcript" aria-live="polite"></main>
+  <div class="interactions">
+    <aside id="approvals" class="approvals" aria-label="Muse permission requests" aria-live="polite" hidden></aside>
+    <aside id="questions" class="questions" aria-label="Questions from Muse" aria-live="polite" hidden></aside>
+  </div>
+  <button id="latest" class="latest" type="button" hidden aria-label="Scroll to latest message">Latest message ↓</button>
   <section class="welcome" aria-label="Getting started">
-    <div class="welcome-mark">${ICON_MUSE}</div>
-    <h1 class="welcome-title">What should Muse build?</h1>
+    <div class="welcome-mark"><img src="${brandUri}" width="68" height="68" alt="Muse" /></div>
+    <h1 class="welcome-title">What are we building?</h1>
+    <p class="welcome-description">A question, a fix, your next idea.</p>
     <ul class="welcome-tips">
       <li><kbd>@</kbd> attaches a file with its contents</li>
       <li><strong>Attach</strong> adds Problems, terminal output, or open editors</li>
@@ -1307,10 +1818,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     </p>
   </section>
   <footer class="composer">
+    <p id="draft-note" class="draft-note" role="status" aria-live="polite" hidden></p>
+    <aside id="session-conflict" class="session-conflict" aria-label="Session mode needs attention" aria-live="polite" hidden>
+      <p id="session-conflict-text"></p>
+      <div class="session-conflict-actions">
+        <button type="button" id="session-conflict-panel" class="secondary">Use Panel approvals</button>
+        <button type="button" id="session-conflict-new" class="secondary">Start new session</button>
+      </div>
+    </aside>
     <div id="attachments" class="attachments" hidden aria-label="Attached context"></div>
     <div id="mentions" class="mentions" hidden role="listbox" aria-label="File mentions"></div>
     <div class="input-box">
-      <textarea id="input" rows="2" placeholder="Ask Muse… (@ file, ⌘Enter to send)"></textarea>
+      <div class="input-field">
+        <div id="input-mirror" class="input-mirror" aria-hidden="true"></div>
+        <textarea id="input" rows="2" placeholder="Ask Muse… (@ file, ⌘Enter to send)"></textarea>
+      </div>
       <div class="actions">
         <div class="attach-wrap">
           <button type="button" id="attach" class="icon-btn" title="Attach file contents, problems, terminal output, or open editors" aria-label="Attach context">${ICON_ATTACH}</button>
@@ -1351,7 +1873,14 @@ const ICON_CLOSE = svg('<path d="M4 4l8 8M12 4l-8 8"/>', 14);
 const ICON_ATTACH = svg('<path d="M10.5 5 5.8 9.7a1.3 1.3 0 0 0 1.9 1.9l5-5a2.6 2.6 0 0 0-3.7-3.7l-5 5a3.9 3.9 0 0 0 5.5 5.5L14 9"/>');
 const ICON_SEND = svg('<path d="M8 13V3M3.5 7.5 8 3l4.5 4.5"/>');
 const ICON_STOP = '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><rect x="1.5" y="1.5" width="9" height="9" rx="1.5" fill="currentColor"/></svg>';
-const ICON_MUSE = svg('<path d="M2 12.5V4l3 4.5L8 4l3 4.5L14 4v8.5"/>', 28);
+
+/**
+ * The echo provider repeats the whole expanded prompt, including the
+ * <attached-context> block; that block is for the model, not for display.
+ */
+function assistantDisplayText(text: string): string {
+  return stripAttachedContext(text).display;
+}
 
 function getNonce(): string {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";

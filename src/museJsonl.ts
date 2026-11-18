@@ -25,11 +25,14 @@ export interface MuseRecord {
 export type MuseUiEvent =
   | { kind: "user"; prompt: string; sessionId?: string }
   | { kind: "assistant_delta"; text: string }
+  | { kind: "assistant_begin" }
   | { kind: "assistant_final"; text: string; terminal: string; reason?: string | null }
   | { kind: "status"; text: string }
   | {
       kind: "tool";
       name: string;
+      callId?: string;
+      status?: string;
       resultRaw: string;
       resultView: string | null;
       execMeta?: ExecMeta;

@@ -40,6 +40,20 @@ export function transcriptFromSessionEnvelopes(
 ): TranscriptItem[] {
   const items: TranscriptItem[] = [];
   const seenRunPrompts = new Set<string>();
+  const forkTurns = new Set<number>();
+  const seededRuns = new Set<string>();
+
+  // Native fork records contain committed public turns, not runtime.session events.
+  // Never render the model_prefix: it includes internal instructions and reasoning replay.
+  for (const env of envelopes) {
+    if (env.payload_type !== "session.fork.turn") continue;
+    const seed = env.payload as { turn_index?: number; turn?: { prompt?: unknown; answer?: unknown; source?: { run_id?: string } } } | undefined;
+    if (typeof seed?.turn_index !== "number" || forkTurns.has(seed.turn_index) || typeof seed.turn?.prompt !== "string" || typeof seed.turn.answer !== "string") continue;
+    forkTurns.add(seed.turn_index);
+    if (seed.turn.source?.run_id) seededRuns.add(seed.turn.source.run_id);
+    if (seed.turn.prompt.trim()) items.push({ type: "user", text: seed.turn.prompt });
+    if (seed.turn.answer.trim()) items.push({ type: "assistant", text: seed.turn.answer });
+  }
 
   for (const env of envelopes) {
     if (env.payload_type !== "runtime.session") {
@@ -49,6 +63,7 @@ export function transcriptFromSessionEnvelopes(
     if (!payload || payload.kind !== "run") {
       continue;
     }
+    if (payload.run_id && seededRuns.has(payload.run_id)) continue;
     const event = payload.event;
     if (!event?.kind) {
       continue;
@@ -86,6 +101,7 @@ export function transcriptFromSessionEnvelopes(
         items.push({
           type: "tool",
           name: result.tool_call_id?.slice(0, 12) || "tool",
+          ...(result.tool_call_id ? { callId: result.tool_call_id } : {}),
           resultRaw: truncateText(raw, 32000),
         });
       }

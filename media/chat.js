@@ -1,6 +1,7 @@
 (function () {
   const vscode = acquireVsCodeApi();
   const transcript = document.getElementById("transcript");
+  const latestBtn = document.getElementById("latest");
   const input = document.getElementById("input");
   const sendBtn = document.getElementById("send");
   const stopBtn = document.getElementById("stop");
@@ -22,6 +23,11 @@
   const attachMenu = document.getElementById("attach-menu");
   const toolbarHistoryBtn = document.getElementById("toolbar-history");
   const toolbarNewBtn = document.getElementById("toolbar-new");
+  const renameSessionBtn = document.getElementById("session-rename");
+  const forkSessionBtn = document.getElementById("session-fork");
+  const sessionActionStatus = document.getElementById("session-action-status");
+  const sessionParent = document.getElementById("session-parent");
+  let sessionActionBusy = false;
   const modeBanner = document.getElementById("mode-banner");
   const modeBannerText = document.getElementById("mode-banner-text");
   const modeBannerDismiss = document.getElementById("mode-banner-dismiss");
@@ -29,6 +35,18 @@
   const modePill = document.getElementById("mode-pill");
   const modelPill = document.getElementById("model-pill");
   const effortPill = document.getElementById("effort-pill");
+  const inputMirror = document.getElementById("input-mirror");
+  const approvalsEl = document.getElementById("approvals");
+  const questionsEl = document.getElementById("questions");
+  const draftNote = document.getElementById("draft-note");
+  const sessionConflictEl = document.getElementById("session-conflict");
+  const sessionConflictText = document.getElementById("session-conflict-text");
+  const sessionConflictPanel = document.getElementById("session-conflict-panel");
+  const sessionConflictNew = document.getElementById("session-conflict-new");
+  let sessionConflict = null;
+  let currentSessionId = "";
+  const questionCards = new Map();
+  input.addEventListener("focus", function () { vscode.postMessage({ type: "activateChat" }); });
 
   const isMac =
     typeof navigator !== "undefined" &&
@@ -47,30 +65,77 @@
   const EXPANDED_CHARS = 8000;
 
   let running = false;
+  let submitting = false;
   let museReady = false;
   let assistantEl = null;
   let toolOutputFormat = "readable";
   let toolDisplay = "compact";
   let chatFormat = "markdown";
   const toolCards = new Set();
+  const reuseButtons = new Set();
+  let draftContextWarning = "";
   let silentToolRuns = 0;
   const MINIMAL_HEARTBEAT_EVERY = 5;
   let mentionItems = [];
   let mentionIndex = 0;
   let mentionRequestId = 0;
   let mentionToken = null;
+  // Files picked with @ stay in the prompt text as "@path" (attached at send time).
+  let mentionedFiles = [];
+  let lastConfig = {};
+  let menuEl = null;
+  let historyAnchor = null;
+  let sessionPicker = null;
+  let sessionRequestId = 0;
   let attachments = [];
   let currentFileRequestId = 0;
   let dismissedBannerMode = null;
   let currentExecutionMode = null;
+  let copyRequestId = 0;
+  const copyButtons = new Map();
+  let changesCard = null;
+  let turnReviewCards = [];
+  let followLatest = true;
+  let chatId = (vscode.getState && vscode.getState() || {}).chatId;
+
+  function saveDraft() {
+    if (!input.value && !attachments.length) draftContextWarning = "";
+    refreshDraftActions();
+    if (vscode.setState) {
+      vscode.setState({ chatId: chatId, draft: input.value, attachments: attachments, mentionedFiles: mentionedFiles, draftContextWarning: draftContextWarning });
+    }
+  }
+
+  function restoreDraft() {
+    const saved = vscode.getState ? vscode.getState() : null;
+    if (!saved || typeof saved.draft !== "string") return;
+    input.value = saved.draft;
+    if (Array.isArray(saved.attachments)) {
+      saved.attachments.slice(0, 16).forEach(addAttachment);
+    }
+    mentionedFiles = Array.isArray(saved.mentionedFiles)
+      ? saved.mentionedFiles.filter(function (path) { return typeof path === "string"; }).slice(0, 16)
+      : [];
+    draftContextWarning = typeof saved.draftContextWarning === "string" ? saved.draftContextWarning : "";
+    syncInputMirror();
+    saveDraft();
+  }
 
   // keep in sync with canvas.js:LINK_RE and previewContent.ts:DOC_PATH_SOURCE
   const LINK_RE =
     /(?:(?:https?:\/\/|file:\/\/)[^\s<>"']+|(?<![\w.~/\\-])(?:(?:[A-Za-z]:)?[\\/])?(?:[\w.~-]+[\\/])*[\w.~-]+\.(?:html?|pdf|markdown|md|jsonl?|ya?ml|toon|csv|tsv|txt|xlsx?|svg|png|jpe?g|gif|webp)(?![A-Za-z0-9]))/gi;
 
-  function scrollBottom() {
-    transcript.scrollTop = transcript.scrollHeight;
+  function scrollBottom(force) {
+    if (force) followLatest = true;
+    if (followLatest) transcript.scrollTop = transcript.scrollHeight;
+    if (latestBtn) latestBtn.hidden = followLatest;
   }
+
+  transcript.addEventListener("scroll", function () {
+    followLatest = transcript.scrollHeight - transcript.clientHeight - transcript.scrollTop < 60;
+    if (latestBtn) latestBtn.hidden = followLatest;
+  });
+  if (latestBtn) latestBtn.addEventListener("click", function () { scrollBottom(true); });
 
   /**
    * Render chips for files the extension host verified exist on disk.
@@ -150,16 +215,19 @@
     }
     attachments.push(a.kind === "file" ? { kind: "file", path: a.path } : { kind: a.kind });
     renderAttachments();
+    saveDraft();
   }
 
   function removeAttachment(index) {
     attachments.splice(index, 1);
     renderAttachments();
+    saveDraft();
   }
 
   function clearAttachments() {
     attachments = [];
     renderAttachments();
+    saveDraft();
   }
 
   function renderAttachments() {
@@ -212,6 +280,58 @@
     parent.appendChild(row);
   }
 
+  function refreshDraftActions() {
+    const occupied = !!input.value || !!attachments.length || submitting || !museReady;
+    reuseButtons.forEach(function (button) {
+      button.disabled = occupied;
+      button.title = occupied ? "Keep or clear your current draft before reusing another message" : "Load this request as a draft. Review and send it as a new turn.";
+    });
+    if (draftNote) {
+      draftNote.textContent = draftContextWarning || (running ? "Muse is working. Prepare your next message here; send it when this turn finishes." : "");
+      draftNote.hidden = !draftNote.textContent;
+    }
+  }
+
+  function addUserMsg(prompt, attached, requestContext) {
+    const el = addMsg("user", "");
+    const body = el.querySelector(".body");
+    if (body) {
+      renderPromptInto(body, prompt);
+    }
+    // Files already shown inline as @path do not need a second chip.
+    const inline = mentionedInText(prompt);
+    const rest = (attached || []).filter(function (label) {
+      return inline.indexOf(String(label)) === -1;
+    });
+    appendContextChips(el, rest);
+    const actions = document.createElement("div");
+    actions.className = "message-actions user-actions";
+    const reuse = document.createElement("button");
+    reuse.type = "button";
+    reuse.className = "message-reuse";
+    reuse.textContent = "Use as draft";
+    reuse.setAttribute("aria-label", "Use this message as a draft");
+    reuse.addEventListener("click", function () {
+      if (input.value || attachments.length || submitting || !museReady) return;
+      input.value = prompt;
+      mentionedFiles = [];
+      if (Array.isArray(requestContext)) requestContext.slice(0, 16).forEach(function (item) {
+        if (item && ["file", "problems", "terminal", "editors"].indexOf(item.kind) !== -1) {
+          addAttachment(item);
+          if (item.kind === "file" && typeof item.path === "string") mentionedFiles.push(item.path);
+        }
+      });
+      draftContextWarning = !Array.isArray(requestContext) && (attached || []).length
+        ? "Reattach context before sending this older message: " + attached.join(", ") : "";
+      syncInputMirror(); saveDraft(); input.focus();
+    });
+    reuseButtons.add(reuse);
+    actions.appendChild(reuse);
+    el.appendChild(actions);
+    refreshDraftActions();
+    return el;
+  }
+
   function resetSilentToolRuns() {
     silentToolRuns = 0;
   }
@@ -246,6 +366,25 @@
       body.textContent = text;
     }
     el.appendChild(body);
+    if (className === "assistant") {
+      el.copyText = text || "";
+      const actions = document.createElement("div");
+      actions.className = "message-actions";
+      const copy = document.createElement("button");
+      copy.type = "button";
+      copy.className = "message-copy";
+      copy.textContent = "Copy response";
+      copy.title = "Copy the original response as Markdown";
+      copy.addEventListener("click", function () {
+        if (!el.copyText || copy.disabled) return;
+        copy.disabled = true;
+        copyRequestId += 1;
+        copyButtons.set(copyRequestId, copy);
+        vscode.postMessage({ type: "copyText", text: el.copyText, requestId: copyRequestId });
+      });
+      actions.appendChild(copy);
+      el.appendChild(actions);
+    }
     appendFileChips(el, files);
     transcript.appendChild(el);
     scrollBottom();
@@ -424,10 +563,10 @@
 
   function addToolCard(data) {
     const meta = data.execMeta || {};
-    const failed =
+    const failed = ["failed", "cancelled", "rejected", "timedOut"].includes(data.status) || (
       meta.exitCode !== undefined &&
       meta.exitCode !== null &&
-      meta.exitCode !== 0;
+      meta.exitCode !== 0);
     if (toolDisplay === "minimal" && !failed && !minimalSummary(data)) {
       noteSilentToolRun();
       return null;
@@ -455,11 +594,13 @@
     header.appendChild(disclosureBtn);
 
     let badge = null;
-    if (meta.exitCode !== undefined && meta.exitCode !== null) {
+    if ((meta.exitCode !== undefined && meta.exitCode !== null) || failed) {
       badge = document.createElement("span");
       badge.className =
-        "tool-exit " + (meta.exitCode === 0 ? "tool-exit-ok" : "tool-exit-fail");
-      badge.textContent = "exit " + meta.exitCode;
+        "tool-exit " + (failed ? "tool-exit-fail" : "tool-exit-ok");
+      const statusText = data.status === "timedOut" ? "timed out" : data.status;
+      badge.textContent = meta.exitCode !== undefined && meta.exitCode !== null
+        ? (failed && meta.exitCode === 0 ? statusText + " · " : "") + "exit " + meta.exitCode : statusText;
       header.appendChild(badge);
     }
 
@@ -644,22 +785,25 @@
   function clearTranscript() {
     transcript.innerHTML = "";
     toolCards.clear();
+    reuseButtons.clear();
     assistantEl = null;
+    changesCard = null;
+    turnReviewCards = [];
+    copyButtons.clear();
     resetSilentToolRuns();
   }
 
   function renderHistory(items) {
+    const previousTop = transcript.scrollTop;
     clearTranscript();
     if (!items || !items.length) {
       return;
     }
     for (const item of items) {
       switch (item.type) {
-        case "user": {
-          const el = addMsg("user", item.text || "");
-          appendContextChips(el, item.attached);
+        case "user":
+          addUserMsg(item.text || "", item.attached, item.requestContext);
           break;
-        }
         case "assistant":
           addMsg(
             "assistant",
@@ -677,7 +821,9 @@
           addMsg("task", item.text || "", "task");
           break;
         case "status":
-          addMsg("status", item.text || "", "status");
+          if (item.text !== "Run started") {
+            addMsg("status", item.text || "", "status");
+          }
           break;
         case "error":
           addMsg("error", item.text || "", "error");
@@ -687,15 +833,31 @@
       }
     }
     assistantEl = null;
+    if (!followLatest) transcript.scrollTop = previousTop;
   }
 
   function setRunning(value) {
     running = value;
-    sendBtn.disabled = value || !museReady;
+    if (document.body && document.body.classList) {
+      document.body.classList.toggle("is-running", !!value);
+    }
+    sendBtn.disabled = value || submitting || sessionActionBusy || !museReady || !!sessionConflict;
+    if (renameSessionBtn) renameSessionBtn.disabled = value || submitting || sessionActionBusy;
+    if (forkSessionBtn) forkSessionBtn.disabled = value || submitting || sessionActionBusy;
+    if (sessionConflictPanel) sessionConflictPanel.disabled = value || submitting;
+    if (sessionConflictNew) sessionConflictNew.disabled = value || submitting;
     stopBtn.disabled = !value;
-    input.disabled = value || !museReady;
-    historyBtn.disabled = value;
-    sessionBtn.disabled = value;
+    input.disabled = submitting || !museReady;
+    input.placeholder = value ? "Draft your next message…" : "Ask Muse… (" + submitChord + " to send)";
+    refreshDraftActions();
+    historyBtn.disabled = value || sessionActionBusy;
+    sessionBtn.disabled = value || sessionActionBusy;
+    if (toolbarNewBtn) toolbarNewBtn.disabled = false;
+    if (toolbarHistoryBtn) toolbarHistoryBtn.disabled = value || submitting || sessionActionBusy;
+    turnReviewCards.forEach(function (card) {
+      const undo = card.querySelector(".undo-turn");
+      if (undo) undo.disabled = value || submitting;
+    });
   }
 
   function setSetup(msg) {
@@ -754,7 +916,10 @@
         (msg.executionModeDescription ? " — " + msg.executionModeDescription : "") +
         " (click to switch)";
     }
-    if (modelPill && msg.model !== undefined) {
+    if (modelPill && msg.useEchoProvider) {
+      modelPill.textContent = "Echo";
+      modelPill.title = "Echo provider (offline test). Click to switch to Meta models.";
+    } else if (modelPill && msg.model !== undefined) {
       modelPill.textContent = "Model " + formatModelPill(msg.model);
       modelPill.title = "Model: " + formatModelPill(msg.model) + " (opens settings)";
     }
@@ -774,28 +939,455 @@
 
   function submit() {
     const prompt = input.value.trim();
-    if ((!prompt && !attachments.length) || running || !museReady) {
+    if (sessionConflict) { sessionConflictPanel.focus(); return; }
+    if ((!prompt && !attachments.length) || running || submitting || sessionActionBusy || !museReady) {
       return;
     }
     hideMentions();
     hideAttachMenu();
+    closeMenu();
     assistantEl = null;
+    const outgoing = attachments.map(function (a) {
+      return a.kind === "file" ? { kind: "file", path: a.path } : { kind: a.kind };
+    });
+    const inline = inlineMentionedFiles(prompt);
+    for (let i = 0; i < inline.length; i++) {
+      const already = outgoing.some(function (a) {
+        return a.kind === "file" && a.path === inline[i];
+      });
+      if (!already && outgoing.length < 16) {
+        outgoing.push({ kind: "file", path: inline[i] });
+      }
+    }
+    submitting = true;
+    setRunning(running);
     vscode.postMessage({
       type: "submit",
       prompt: prompt,
-      attachments: attachments.map(function (a) {
-        return a.kind === "file" ? { kind: "file", path: a.path } : { kind: a.kind };
-      }),
+      attachments: outgoing,
     });
-    input.value = "";
-    clearAttachments();
   }
 
-  function pickSession() {
-    if (running) {
+  /**
+   * Paint @file tokens behind the (transparent-background) textarea. Built
+   * with text nodes only, never innerHTML, since the text is user input.
+   */
+  function syncInputMirror() {
+    if (!inputMirror) {
       return;
     }
-    vscode.postMessage({ type: "pickSession" });
+    inputMirror.textContent = "";
+    const text = input.value || "";
+    const parts = text.split(/(@[^\s@]+)/);
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      if (!part) {
+        continue;
+      }
+      const isMention =
+        part.charAt(0) === "@" &&
+        (mentionedFiles.indexOf(part.slice(1)) !== -1 || /[./\\]/.test(part.slice(1)));
+      if (isMention) {
+        const mark = document.createElement("mark");
+        mark.textContent = part;
+        inputMirror.appendChild(mark);
+      } else {
+        inputMirror.appendChild(document.createTextNode(part));
+      }
+    }
+    // A trailing newline in a textarea still takes a line; keep heights equal.
+    inputMirror.appendChild(document.createTextNode("​"));
+    inputMirror.scrollTop = input.scrollTop;
+  }
+
+  function escapeRegExp(text) {
+    return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  /** Picked @files whose token is still present in the prompt text. */
+  function inlineMentionedFiles(text) {
+    return mentionedFiles.filter(function (path) {
+      return new RegExp("(^|\\s)@" + escapeRegExp(path) + "(?=\\s|$)").test(text);
+    });
+  }
+
+  /** User prompt with @file tokens rendered as inline pills. */
+  function renderPromptInto(body, text) {
+    body.textContent = "";
+    const parts = String(text || "").split(/(@[^\s@]+)/);
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      if (!part) {
+        continue;
+      }
+      if (part.charAt(0) === "@" && part.length > 1) {
+        const tok = document.createElement("span");
+        tok.className = "mention-token";
+        tok.textContent = part;
+        body.appendChild(tok);
+      } else if (typeof document.createTextNode === "function") {
+        body.appendChild(document.createTextNode(part));
+      } else {
+        const span = document.createElement("span");
+        span.textContent = part;
+        body.appendChild(span);
+      }
+    }
+  }
+
+  function mentionedInText(text) {
+    const out = [];
+    const re = /(^|\s)@([^\s@]+)/g;
+    let m;
+    while ((m = re.exec(String(text || ""))) !== null) {
+      out.push(m[2]);
+    }
+    return out;
+  }
+
+  // ---------- dropdown menus (mode / model / effort / sessions) ----------
+
+  function closeMenu() {
+    if (menuEl && menuEl.parentNode && typeof menuEl.parentNode.removeChild === "function") {
+      menuEl.parentNode.removeChild(menuEl);
+    }
+    menuEl = null;
+    sessionPicker = null;
+  }
+
+  function placeMenu(el, anchor) {
+    if (!anchor || typeof anchor.getBoundingClientRect !== "function" || !el.style) {
+      return;
+    }
+    const r = anchor.getBoundingClientRect();
+    const vw = window.innerWidth || 0;
+    const vh = window.innerHeight || 0;
+    const width = Math.min(300, Math.max(180, vw - 16));
+    el.style.width = width + "px";
+    const left = Math.min(Math.max(8, r.left), Math.max(8, vw - width - 8));
+    el.style.left = left + "px";
+    if (r.top > vh / 2) {
+      el.style.bottom = Math.max(8, vh - r.top + 4) + "px";
+      el.style.maxHeight = Math.max(120, r.top - 16) + "px";
+    } else {
+      el.style.top = r.bottom + 4 + "px";
+      el.style.maxHeight = Math.max(120, vh - r.bottom - 16) + "px";
+    }
+  }
+
+  /**
+   * items: [{ label, detail, value, checked } | { separator: true } | { empty: true, label }]
+   * onPick(value) runs with the chosen item's value.
+   */
+  function openMenu(anchor, title, items, onPick) {
+    const wasSame = menuEl && menuEl.__anchor === anchor;
+    closeMenu();
+    if (wasSame) {
+      return;
+    }
+    const el = document.createElement("div");
+    el.className = "menu";
+    if (typeof el.setAttribute === "function") {
+      el.setAttribute("role", "menu");
+    }
+    el.__anchor = anchor;
+    if (title) {
+      const head = document.createElement("div");
+      head.className = "menu-title";
+      head.textContent = title;
+      el.appendChild(head);
+    }
+    for (let i = 0; i < items.length; i++) {
+      (function (item) {
+        if (item.separator) {
+          const sep = document.createElement("div");
+          sep.className = "menu-sep";
+          el.appendChild(sep);
+          return;
+        }
+        if (item.empty) {
+          const empty = document.createElement("div");
+          empty.className = "menu-empty";
+          empty.textContent = item.label;
+          el.appendChild(empty);
+          return;
+        }
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "menu-item" + (item.checked ? " checked" : "");
+        if (typeof btn.setAttribute === "function") {
+          btn.setAttribute("role", "menuitemradio");
+          btn.setAttribute("aria-checked", item.checked ? "true" : "false");
+        }
+        const check = document.createElement("span");
+        check.className = "menu-check";
+        check.textContent = item.checked ? "✓" : "";
+        const text = document.createElement("span");
+        text.className = "menu-text";
+        const label = document.createElement("span");
+        label.className = "menu-label";
+        label.textContent = item.label;
+        text.appendChild(label);
+        if (item.detail) {
+          const detail = document.createElement("span");
+          detail.className = "menu-detail";
+          detail.textContent = item.detail;
+          text.appendChild(detail);
+        }
+        btn.appendChild(check);
+        btn.appendChild(text);
+        btn.addEventListener("click", function () {
+          closeMenu();
+          onPick(item.value);
+        });
+        el.appendChild(btn);
+      })(items[i]);
+    }
+    const host = document.body || transcript.parentNode || transcript;
+    host.appendChild(el);
+    placeMenu(el, anchor);
+    menuEl = el;
+  }
+
+  function relativeTime(ms) {
+    if (!ms) {
+      return "";
+    }
+    const min = Math.round(Math.max(0, Date.now() - ms) / 60000);
+    if (min < 1) {
+      return "just now";
+    }
+    if (min < 60) {
+      return min + "m ago";
+    }
+    const h = Math.round(min / 60);
+    if (h < 24) {
+      return h + "h ago";
+    }
+    return Math.round(h / 24) + "d ago";
+  }
+
+  function openModeMenu() {
+    const current = lastConfig.executionMode || "headless";
+    openMenu(
+      modePill,
+      "Mode",
+      [
+        {
+          label: "Panel approvals",
+          detail: "Review tool permissions here in chat",
+          value: "panel",
+          checked: current === "panel",
+        },
+        {
+          label: "Windows compatibility",
+          detail: "Sandboxed Windows shell; Headless permissions",
+          value: "windows",
+          checked: current === "windows",
+        },
+        {
+          label: "Headless",
+          detail: "Chat here; approvals are skipped",
+          value: "headless",
+          checked: current === "headless",
+        },
+        {
+          label: "Interactive",
+          detail: "Muse terminal; can ask for approvals",
+          value: "interactive",
+          checked: current === "interactive",
+        },
+      ],
+      function (value) {
+        vscode.postMessage({ type: "setSetting", key: "executionMode", value: value });
+      },
+    );
+  }
+
+  function openModelMenu() {
+    const echoOn = !!lastConfig.useEchoProvider;
+    const current = lastConfig.model || "";
+    const options = lastConfig.modelOptions || [{ value: "", label: "Auto" }];
+    const items = echoOn
+      ? [
+          { label: "Echo (offline test)", detail: "Replies repeat your prompt; no Meta API", value: "__echo_on__", checked: true },
+          { separator: true },
+          { label: "Use Meta models", detail: "Turn off echo and pick a model", value: "__echo_off__" },
+        ]
+      : options
+          .map(function (o) {
+            return { label: o.label, detail: o.detail, value: o.value, checked: o.value === current };
+          })
+          .concat([
+            { separator: true },
+            { label: "Echo (offline test)", detail: "No API calls; replies repeat your prompt", value: "__echo_on__" },
+          ]);
+    openMenu(modelPill, "Model", items, function (value) {
+      if (value === "__echo_on__" || value === "__echo_off__") {
+        if ((value === "__echo_on__") !== echoOn) {
+          vscode.postMessage({ type: "setSetting", key: "useEchoProvider", value: value === "__echo_on__" ? "true" : "false" });
+        }
+        return;
+      }
+      vscode.postMessage({ type: "setSetting", key: "model", value: value });
+    });
+  }
+
+  function openEffortMenu() {
+    const current = lastConfig.reasoningEffort || "";
+    const options = lastConfig.effortOptions || [{ value: "", label: "Default" }];
+    openMenu(
+      effortPill,
+      "Reasoning effort",
+      options.map(function (o) {
+        return { label: o.label, detail: o.detail, value: o.value, checked: o.value === current };
+      }),
+      function (value) {
+        vscode.postMessage({ type: "setSetting", key: "reasoningEffort", value: value });
+      },
+    );
+  }
+
+  function requestSessionSearch(query) {
+    if (!sessionPicker) return;
+    sessionRequestId += 1;
+    sessionPicker.results.textContent = "";
+    sessionPicker.buttons = [];
+    sessionPicker.status.textContent = "Searching…";
+    sessionPicker.search.removeAttribute("aria-activedescendant");
+    vscode.postMessage({ type: "listSessions", query: query.slice(0, 256), requestId: sessionRequestId });
+  }
+
+  function highlightSession(index) {
+    const picker = sessionPicker;
+    if (!picker || !picker.buttons.length) return;
+    picker.index = (index + picker.buttons.length) % picker.buttons.length;
+    picker.buttons.forEach(function (button, i) {
+      button.classList.toggle("active", i === picker.index);
+      button.setAttribute("aria-selected", i === picker.index ? "true" : "false");
+    });
+    const active = picker.buttons[picker.index];
+    picker.search.setAttribute("aria-activedescendant", active.id);
+    if (typeof active.scrollIntoView === "function") active.scrollIntoView({ block: "nearest" });
+  }
+
+  function renderSessionMenu(msg) {
+    const picker = sessionPicker;
+    if (!picker || msg.requestId !== sessionRequestId) return;
+    picker.results.textContent = "";
+    picker.buttons = [];
+    const list = msg.items || [];
+    picker.status.textContent = msg.error || (!list.length
+      ? (picker.search.value.trim() ? "No matching sessions. Try another word or session id." : "No earlier sessions in this folder.")
+      : list.length >= msg.limit ? "Showing the latest " + list.length + " matches. Narrow your search for older sessions." : list.length + (list.length === 1 ? " session" : " sessions"));
+    list.forEach(function (s, i) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "menu-item session-result";
+      button.id = "session-result-" + sessionRequestId + "-" + i;
+      button.setAttribute("role", "option");
+      const text = document.createElement("span");
+      text.className = "menu-text";
+      const title = document.createElement("span");
+      title.className = "menu-label";
+      title.textContent = (s.current ? "Current · " : "") + s.title;
+      text.appendChild(title);
+      const detail = document.createElement("span");
+      detail.className = "menu-detail";
+      detail.textContent = [relativeTime(s.updatedMs), s.turns ? s.turns + (s.turns === 1 ? " turn" : " turns") : "", String(s.id).slice(0, 8)].filter(Boolean).join(" · ");
+      text.appendChild(detail);
+      if (s.preview && s.preview !== s.title) {
+        const preview = document.createElement("span");
+        preview.className = "menu-detail session-preview";
+        preview.textContent = s.preview;
+        text.appendChild(preview);
+      }
+      button.appendChild(text);
+      button.title = s.title + "\n" + (s.preview || "") + "\n" + s.id;
+      button.addEventListener("click", function () {
+        closeMenu();
+        vscode.postMessage({ type: "resumeSession", sessionId: s.id });
+      });
+      picker.buttons.push(button);
+      picker.results.appendChild(button);
+    });
+    highlightSession(0);
+  }
+
+  function openSessionMenu(anchor) {
+    closeMenu();
+    const el = document.createElement("div");
+    el.className = "menu session-menu";
+    el.setAttribute("role", "dialog");
+    el.setAttribute("aria-label", "Session history");
+    el.__anchor = anchor;
+    const search = document.createElement("input");
+    search.className = "session-search";
+    search.type = "search";
+    search.placeholder = "Search title, first message or session id…";
+    search.maxLength = 256;
+    search.setAttribute("role", "combobox");
+    search.setAttribute("aria-label", "Search sessions");
+    search.setAttribute("aria-autocomplete", "list");
+    search.setAttribute("aria-expanded", "true");
+    search.setAttribute("aria-controls", "session-results");
+    el.appendChild(search);
+    const status = document.createElement("div");
+    status.className = "menu-empty session-status";
+    status.setAttribute("role", "status");
+    el.appendChild(status);
+    const results = document.createElement("div");
+    results.className = "session-results";
+    results.id = "session-results";
+    results.setAttribute("role", "listbox");
+    results.setAttribute("aria-label", "Matching sessions");
+    el.appendChild(results);
+    [["New session", "newSession"], ["Clean up sessions…", "cleanupSessions"]].forEach(function (action) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "menu-item session-action";
+      button.textContent = action[0];
+      button.addEventListener("click", function () { closeMenu(); vscode.postMessage({ type: action[1] }); });
+      el.appendChild(button);
+    });
+    (document.body || transcript.parentNode || transcript).appendChild(el);
+    placeMenu(el, anchor);
+    menuEl = el;
+    sessionPicker = { search: search, status: status, results: results, buttons: [], index: 0 };
+    search.addEventListener("input", function () { requestSessionSearch(search.value); });
+    search.addEventListener("keydown", function (event) {
+      if (event.isComposing || !sessionPicker) return;
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        highlightSession(sessionPicker.index + (event.key === "ArrowDown" ? 1 : -1));
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        const button = sessionPicker.buttons[sessionPicker.index];
+        if (button) button.click();
+      }
+    });
+    el.addEventListener("keydown", function (event) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeMenu();
+        if (anchor && typeof anchor.focus === "function") anchor.focus();
+      }
+    });
+    search.focus();
+    requestSessionSearch("");
+  }
+
+  function pickSession(event) {
+    if (running || submitting) {
+      return;
+    }
+    const anchor = event && event.currentTarget ? event.currentTarget : toolbarHistoryBtn;
+    if (menuEl && menuEl.__anchor === anchor) {
+      closeMenu();
+      return;
+    }
+    historyAnchor = anchor;
+    openSessionMenu(anchor);
   }
 
   // keep in sync with src/fileMentions.ts
@@ -832,14 +1424,19 @@
       hideMentions();
       return;
     }
-    // Cursor-style: the pick becomes a context chip (contents attached at
-    // send time) instead of a bare path in the prompt text.
-    input.value = input.value.slice(0, token.start) + input.value.slice(token.end);
-    const nextCursor = token.start;
+    // The pick stays inline as "@path " in the prompt; its contents are
+    // attached at send time while the token is still in the text.
+    const insert = "@" + path + " ";
+    input.value = input.value.slice(0, token.start) + insert + input.value.slice(token.end);
+    const nextCursor = token.start + insert.length;
     input.selectionStart = nextCursor;
     input.selectionEnd = nextCursor;
-    addAttachment({ kind: "file", path: path });
+    if (mentionedFiles.indexOf(path) === -1) {
+      mentionedFiles.push(path);
+    }
+    syncInputMirror();
     hideMentions();
+    saveDraft();
     if (typeof input.focus === "function") {
       input.focus();
     }
@@ -934,18 +1531,44 @@
   }
 
   function addChangesCard(msg) {
+    if (!msg.turnId && changesCard && changesCard.parentNode) changesCard.parentNode.removeChild(changesCard);
     const files = msg.files || [];
-    const lines = files.map(function (file) {
-      const status = file.status === "??" ? "untracked" : file.status || "M";
-      return (file.path || "") + " (" + status + ")";
-    });
     const el = addMsg(
       "changes",
-      lines.join("\n") || "Working tree changed.",
-      "Changed files",
+      (msg.prompt ? msg.prompt + "\n" : "") + files.length + (files.length === 1 ? " file changed." : " files changed.") + (msg.turnId ? (msg.undone ? " Turn undone." : " Saved before/after snapshots.") : " Changes are already on disk."),
+      msg.turnId ? "Turn · " + new Date(msg.createdAt).toLocaleString() : "Changed files",
     );
+    if (msg.turnId) turnReviewCards.push(el); else changesCard = el;
+    for (const file of files) {
+      const fileBtn = document.createElement("button");
+      fileBtn.type = "button";
+      fileBtn.className = "changed-file";
+      fileBtn.textContent = file.path + " · " + (file.status === "??" ? "new" : file.status);
+      fileBtn.title = msg.turnId ? "Open saved before/after diff for this turn" : file.status === "??" ? "Open new file" : "Open VS Code Git diff (may include earlier edits)";
+      fileBtn.addEventListener("click", function () {
+        vscode.postMessage(msg.turnId ? { type: "openTurnDiff", turnId: msg.turnId, path: file.path } : { type: "openChangedFile", path: file.path });
+      });
+      el.appendChild(fileBtn);
+    }
     const actions = document.createElement("div");
     actions.className = "changes-actions";
+    if (msg.turnId) {
+      const undo = document.createElement("button");
+      undo.type = "button";
+      undo.className = "secondary undo-turn";
+      undo.textContent = msg.undone ? "Redo this turn" : "Undo this turn";
+      undo.title = msg.undone ? "Reapply this turn's saved changes. Blocked if a file changed after undo or has an unsaved editor." : "Restore the pre-turn file contents. Blocked if a file has newer edits or an unsaved editor.";
+      undo.turnUndone = !!msg.undone;
+      undo.disabled = running || submitting;
+      undo.addEventListener("click", function () {
+        if (undo.disabled) return;
+        undo.disabled = true;
+        vscode.postMessage({ type: msg.undone ? "redoTurn" : "undoTurn", turnId: msg.turnId });
+      });
+      actions.appendChild(undo);
+      el.appendChild(actions);
+      return;
+    }
     const openBtn = document.createElement("button");
     openBtn.type = "button";
     openBtn.className = "secondary";
@@ -965,6 +1588,12 @@
   }
 
   sendBtn.addEventListener("click", submit);
+  function resolveSessionConflict(action) {
+    if (!sessionConflict || running || submitting) return;
+    vscode.postMessage({ type: "resolveSessionMode", sessionId: sessionConflict.sessionId, mode: sessionConflict.mode, action: action });
+  }
+  if (sessionConflictPanel) sessionConflictPanel.addEventListener("click", function () { resolveSessionConflict("panel"); });
+  if (sessionConflictNew) sessionConflictNew.addEventListener("click", function () { resolveSessionConflict("newSession"); });
   stopBtn.addEventListener("click", function () {
     vscode.postMessage({ type: "stop" });
   });
@@ -975,12 +1604,15 @@
   }
   if (toolbarNewBtn) {
     toolbarNewBtn.addEventListener("click", function () {
-      if (running) {
-        return;
-      }
       vscode.postMessage({ type: "newSession" });
     });
   }
+  if (renameSessionBtn) renameSessionBtn.addEventListener("click", function () {
+    if (!running && !submitting && !sessionActionBusy) vscode.postMessage({ type: "renameSession" });
+  });
+  if (forkSessionBtn) forkSessionBtn.addEventListener("click", function () {
+    if (!running && !submitting && !sessionActionBusy) vscode.postMessage({ type: "forkSession" });
+  });
   if (modeBannerDismiss) {
     modeBannerDismiss.addEventListener("click", function () {
       dismissedBannerMode = currentExecutionMode;
@@ -989,19 +1621,39 @@
       }
     });
   }
+  input.addEventListener("input", function () { syncInputMirror(); saveDraft(); });
+  input.addEventListener("scroll", function () {
+    if (inputMirror) {
+      inputMirror.scrollTop = input.scrollTop;
+    }
+  });
   if (modePill) {
-    modePill.addEventListener("click", function () {
-      vscode.postMessage({ type: "cycleMode" });
-    });
+    modePill.addEventListener("click", openModeMenu);
   }
   if (modelPill) {
-    modelPill.addEventListener("click", function () {
-      vscode.postMessage({ type: "openSettings" });
-    });
+    modelPill.addEventListener("click", openModelMenu);
   }
   if (effortPill) {
-    effortPill.addEventListener("click", function () {
-      vscode.postMessage({ type: "openSettings" });
+    effortPill.addEventListener("click", openEffortMenu);
+  }
+  if (typeof document.addEventListener === "function") {
+    document.addEventListener("mousedown", function (e) {
+      if (!menuEl) {
+        return;
+      }
+      let node = e.target;
+      while (node) {
+        if (node === menuEl || node === menuEl.__anchor) {
+          return;
+        }
+        node = node.parentNode;
+      }
+      closeMenu();
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && menuEl) {
+        closeMenu();
+      }
     });
   }
   recheckBtn.addEventListener("click", function () {
@@ -1112,6 +1764,152 @@
     }
   });
 
+  function renderQuestions(items) {
+    if (!questionsEl) return;
+    const ids = new Set(items.map(function (request) { return request.userInputId; }));
+    questionCards.forEach(function (card, id) {
+      if (!ids.has(id)) { card.el.parentNode.removeChild(card.el); questionCards.delete(id); }
+    });
+    questionsEl.hidden = !items.length;
+    items.forEach(function (request) {
+      let card = questionCards.get(request.userInputId);
+      if (!card) {
+        const section = document.createElement("section");
+        section.className = "question-request";
+        const title = document.createElement("h3");
+        title.textContent = "Muse needs your input";
+        section.appendChild(title);
+        const controls = [];
+        const entries = request.questions.map(function (question) {
+          const field = document.createElement("fieldset");
+          const legend = document.createElement("legend");
+          legend.textContent = question.header;
+          field.appendChild(legend);
+          const prompt = document.createElement("p");
+          prompt.textContent = question.question;
+          field.appendChild(prompt);
+          const multiple = question.selection.mode === "multiple";
+          const options = question.options.map(function (option) {
+            const label = document.createElement("label");
+            label.className = "question-option";
+            const choice = document.createElement("input");
+            choice.type = multiple ? "checkbox" : "radio";
+            choice.name = request.userInputId + "-" + question.id;
+            choice.value = option.label;
+            const text = document.createElement("span");
+            text.textContent = option.label + (option.description ? " — " + option.description : "");
+            label.appendChild(choice); label.appendChild(text); field.appendChild(label);
+            controls.push(choice);
+            return choice;
+          });
+          const written = document.createElement("textarea");
+          written.className = "question-written";
+          written.maxLength = 500;
+          written.placeholder = "Or write your own answer…";
+          written.setAttribute("aria-label", question.header + ": written answer");
+          controls.push(written); field.appendChild(written); section.appendChild(field);
+          return { question: question, options: options, written: written };
+        });
+        const error = document.createElement("p");
+        error.className = "question-error";
+        error.setAttribute("role", "status");
+        section.appendChild(error);
+        const send = document.createElement("button");
+        send.type = "button"; send.className = "question-send"; send.textContent = "Send answers";
+        send.addEventListener("click", function () {
+          if (card.busy) return;
+          const answers = [];
+          let problem = "";
+          entries.forEach(function (entry) {
+            const question = entry.question;
+            const text = entry.written.value.trim();
+            const selected = entry.options.filter(function (option) { return option.checked; }).map(function (option) { return option.value; });
+            if (text) { answers.push({ questionId: question.id, freeText: text }); return; }
+            if (question.selection.mode === "single" && selected.length === 1) {
+              answers.push({ questionId: question.id, selectedLabel: selected[0] }); return;
+            }
+            const min = question.selection.minSelections === undefined ? 1 : question.selection.minSelections;
+            const max = question.selection.maxSelections === undefined ? entry.options.length : question.selection.maxSelections;
+            if (question.selection.mode === "multiple" && selected.length >= min && selected.length <= max) {
+              answers.push({ questionId: question.id, selectedLabels: selected }); return;
+            }
+            problem = "Answer every question. " + (question.selection.mode === "multiple" ? "Choose " + min + "–" + max + " options or write an answer." : "Choose an option or write an answer.");
+          });
+          if (problem) { error.textContent = problem; return; }
+          card.busy = true; controls.forEach(function (control) { control.disabled = true; }); send.disabled = true;
+          vscode.postMessage({ type: "questionAnswer", userInputId: request.userInputId, answers: answers });
+        });
+        section.appendChild(send);
+        card = { el: section, controls: controls, send: send, error: error, busy: false };
+        questionCards.set(request.userInputId, card); questionsEl.appendChild(section);
+      }
+      card.busy = !!request.submitting;
+      card.controls.forEach(function (control) { control.disabled = card.busy; });
+      card.send.disabled = card.busy;
+      card.send.textContent = card.busy ? "Sending answers…" : "Send answers";
+      card.error.textContent = request.error || "";
+    });
+  }
+
+  function renderApprovals(items) {
+    if (!approvalsEl) return;
+    approvalsEl.textContent = "";
+    approvalsEl.hidden = !items.length;
+    items.forEach(function (request) {
+      const section = document.createElement("section");
+      section.className = "approval-request";
+      const title = document.createElement("h3");
+      title.textContent = "Permission needed · " + request.toolName;
+      section.appendChild(title);
+      const detail = document.createElement("pre");
+      const subject = request.subject || {};
+      const target = subject.command || subject.path || subject.target || subject.kind;
+      detail.textContent = target + (request.rawArgs ? "\n\n" + request.rawArgs : "");
+      section.appendChild(detail);
+      if (request.reviewerReason) {
+        const reason = document.createElement("p");
+        reason.textContent = request.reviewerReason;
+        section.appendChild(reason);
+      }
+      let feedback = null;
+      if (request.availableChoices.some(function (choice) { return choice.acceptsFeedback; })) {
+        feedback = document.createElement("textarea");
+        feedback.className = "approval-feedback";
+        feedback.setAttribute("aria-label", "Optional guidance for Muse");
+        feedback.placeholder = "Optional guidance for Muse";
+        section.appendChild(feedback);
+      }
+      const actions = document.createElement("div");
+      let deciding = false;
+      const buttons = [];
+      actions.className = "approval-actions";
+      request.availableChoices.forEach(function (choice) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = choice.label;
+        button.title = choice.rulePreview || ("Scope: " + choice.scope);
+        button.addEventListener("click", function () {
+          if (deciding) return;
+          deciding = true;
+          buttons.forEach(function (b) { b.disabled = true; });
+          vscode.postMessage({ type: "approvalDecision", approvalId: request.approvalId,
+            sourceIndex: request.currentRequirementId.sourceIndex, choiceId: choice.choiceId,
+            feedback: choice.acceptsFeedback && feedback ? feedback.value : undefined });
+        });
+        actions.appendChild(button);
+        buttons.push(button);
+        if (choice.rulePreview || choice.scope !== "once") {
+          const scope = document.createElement("p");
+          scope.className = "approval-scope";
+          scope.textContent = choice.rulePreview || ("Scope: " + choice.scope);
+          actions.appendChild(scope);
+        }
+      });
+      section.appendChild(actions);
+      approvalsEl.appendChild(section);
+    });
+  }
+
   window.addEventListener("message", function (event) {
     const msg = event.data;
     if (!msg || !msg.type) {
@@ -1119,7 +1917,17 @@
     }
 
     switch (msg.type) {
+      case "chatIdentity":
+        chatId = msg.chatId;
+        saveDraft();
+        break;
       case "config":
+        if (sessionConflict && sessionConflict.mode !== msg.executionMode) {
+          sessionConflict = null;
+          if (sessionConflictEl) sessionConflictEl.hidden = true;
+          setRunning(running);
+        }
+        lastConfig = msg;
         if (executionModeEl && msg.executionModeLabel) {
           executionModeEl.textContent = "Mode: " + msg.executionModeLabel;
           executionModeEl.title = msg.executionModeDescription || "";
@@ -1144,8 +1952,34 @@
           chatFormat = msg.chatFormat;
         }
         break;
+      case "approvals":
+        renderApprovals(Array.isArray(msg.items) ? msg.items : []);
+        break;
+      case "questions":
+        renderQuestions(Array.isArray(msg.items) ? msg.items : []);
+        break;
+      case "sessionCompatibility":
+        if (msg.sessionId !== currentSessionId || (lastConfig.executionMode && msg.mode !== lastConfig.executionMode)) break;
+        sessionConflict = msg.conflict || null;
+        if (sessionConflictEl) sessionConflictEl.hidden = !sessionConflict;
+        if (sessionConflictText) sessionConflictText.textContent = sessionConflict ? sessionConflict.text : "";
+        setRunning(running);
+        break;
       case "session":
-        sessionEl.textContent = (msg.sessionId || "").slice(0, 8);
+        if (currentSessionId !== msg.sessionId) {
+          sessionConflict = null;
+          if (sessionConflictEl) sessionConflictEl.hidden = true;
+          setRunning(running);
+        }
+        currentSessionId = msg.sessionId || "";
+        sessionEl.textContent = msg.title || "New chat";
+        sessionEl.title = (msg.title ? msg.title + " · " : "") + "Session " + (msg.sessionId || "");
+        if (msg.parentSessionId) sessionEl.title += " · Branched from " + msg.parentSessionId;
+        if (sessionParent) {
+          sessionParent.hidden = !msg.parentSessionId;
+          sessionParent.textContent = msg.parentSessionId ? "Branch of " + msg.parentSessionId.slice(0, 8) : "";
+          sessionParent.title = msg.parentSessionId || "";
+        }
         break;
       case "folder":
         // Single-root workspaces already name the folder in the window
@@ -1165,8 +1999,31 @@
       case "setup":
         setSetup(msg);
         break;
+      case "submitAccepted":
+        if (submitting) {
+          input.value = "";
+          mentionedFiles = [];
+          syncInputMirror();
+          clearAttachments();
+        }
+        break;
+      case "submitFinished":
+        submitting = false;
+        setRunning(running);
+        break;
       case "history":
         renderHistory(msg.items || []);
+        break;
+      case "sessionList":
+        renderSessionMenu(msg);
+        break;
+      case "sessionAction":
+        sessionActionBusy = !!msg.busy;
+        if (sessionActionStatus) {
+          sessionActionStatus.hidden = !sessionActionBusy;
+          sessionActionStatus.textContent = sessionActionBusy ? (msg.action === "fork" ? "Creating branch from completed turns… Workspace files stay as they are." : "Saving conversation name…") : "";
+        }
+        setRunning(running);
         break;
       case "expandAll":
         toolCards.forEach(function (card) {
@@ -1183,18 +2040,23 @@
         break;
       case "user": {
         assistantEl = null;
-        const el = addMsg("user", msg.prompt || "");
-        appendContextChips(el, msg.attached);
+        addUserMsg(msg.prompt || "", msg.attached, msg.requestContext);
+        scrollBottom(true);
         break;
       }
       case "assistant_delta": {
         const body = ensureAssistant();
         body.textContent += msg.text || "";
+        assistantEl.copyText += msg.text || "";
         scrollBottom();
         break;
       }
+      case "assistant_begin":
+        assistantEl = null;
+        break;
       case "assistant_final": {
         const body = ensureAssistant();
+        assistantEl.copyText = msg.text || assistantEl.copyText;
         if (msg.html && chatFormat === "markdown") {
           body.classList.add("md-body");
           body.style.whiteSpace = "normal";
@@ -1218,13 +2080,21 @@
         break;
       }
       case "status":
-        addMsg("status", msg.text || "", "status");
+        // "Run started" duplicates the working indicator.
+        if (msg.text !== "Run started") {
+          addMsg("status", msg.text || "", "status");
+        }
         break;
       case "tool":
         addToolCard(msg);
         break;
       case "changes":
         addChangesCard(msg);
+        break;
+      case "turnReviews":
+        turnReviewCards.forEach(function (card) { if (card.parentNode) card.parentNode.removeChild(card); });
+        turnReviewCards = [];
+        (msg.turns || []).forEach(addChangesCard);
         break;
       case "mentionResults":
         if (Number(msg.requestId) === mentionRequestId) {
@@ -1245,6 +2115,15 @@
       case "error":
         addMsg("error", msg.text || "", "error");
         break;
+      case "copyResult": {
+        const button = copyButtons.get(msg.requestId);
+        if (button) {
+          button.disabled = false;
+          button.textContent = msg.ok ? "Copied" : "Copy failed · retry";
+          copyButtons.delete(msg.requestId);
+        }
+        break;
+      }
       case "unknown":
         addMsg(
           "unknown",
@@ -1269,5 +2148,6 @@
     return s.slice(0, n) + "…";
   }
 
+  restoreDraft();
   vscode.postMessage({ type: "ready" });
 })();

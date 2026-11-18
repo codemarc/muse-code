@@ -8,6 +8,18 @@ VS Code / Cursor sidebar chat that drives Meta’s **Muse Code** CLI (`muse exec
 
 Privacy and security: [PRIVACY.md](./PRIVACY.md) · [SECURITY.md](./SECURITY.md)
 
+## Extension experience
+
+- Independent editor conversations, retained history and per-chat drafts.
+- **Rename** saves conversation names in this VS Code workspace, including history search. **Branch** opens an independent Muse conversation through all completed turns, preserving the source and its draft. [Behavior and CLI limitations](./docs/conversation-management.md).
+- Prepare your next message while Muse responds; Stop and reload keep the draft. Send it explicitly once the current turn ends.
+- **Use as draft** copies an earlier request and its retained context into an empty composer. Review it and send a new turn. It never overwrites an existing draft; older context that cannot be restored is marked for reattachment. Context is collected again when you send.
+- In-panel approvals/questions, visible execution modes and safe mode-transition recovery.
+- Persistent per-turn file diffs with guarded Undo/Redo that preserve edits made before the turn.
+- Muse's original logo and blue palette, native editor themes and high-contrast support. [Brand provenance](./media/BRAND.md).
+
+See [tested behavior and remaining extension priorities](./docs/extension-ux-status.md). Muse CLI/MSP runtime limitations are tracked separately in [Windows runtime notes](./docs/windows-sandbox-runtime.md).
+
 ## Requirements
 
 - macOS, Linux, or Windows (see [Windows](#windows))
@@ -79,6 +91,9 @@ Open this folder in VS Code/Cursor and press **F5** (Run Muse CLI Chat Extension
 | Muse CLI Chat: Open in New Window | Reopen the current workspace with Muse ready |
 | Muse CLI Chat: Send Selection | Send the editor selection as context |
 | Muse CLI Chat: New Session | New `--session-id` |
+| Muse Code: New Chat | Open an independent conversation in a new editor tab |
+| Muse Code: Rename Conversation | Save a name for the focused chat in this VS Code workspace |
+| Muse Code: Branch Conversation | Open a native Muse fork through completed turns in a new editor tab; workspace files stay as they are |
 | Muse CLI Chat: Stop | SIGINT the running `muse exec` |
 | Muse CLI Chat: Open Interactive Terminal | Full Muse TUI (approvals, slash commands) |
 | Muse CLI Chat: Copy Session and Open Muse.ai | Copy the current session as markdown, then open [muse.ai](https://muse.ai/) |
@@ -107,7 +122,7 @@ Open this folder in VS Code/Cursor and press **F5** (Run Muse CLI Chat Extension
 | `chatFormat` | `markdown` | Assistant messages in the sidebar: `markdown` (sanitized) or `plain` text. |
 | `preferredLocation` | `secondarySidebar` | Where **Open Chat** opens the native UI: `secondarySidebar`, `panel`, or `terminal`. |
 | `useTerminal` | `false` | Open Chat launches the full Muse interactive terminal instead of the native UI. |
-| `executionMode` | `headless` | `headless` keeps native chat on `muse exec --json`; `interactive` opens the integrated Muse terminal so approvals and interactive input are available. MSP is reserved for a future host-backed mode. |
+| `executionMode` | `panel` | `panel` reviews permissions through MSP; `headless` uses `muse exec --json`; `windows` uses exec's sandboxed legacy shell; `interactive` opens the Muse terminal. |
 
 ## History
 
@@ -124,9 +139,37 @@ stdout looks like a document.
 
 Type `@` in the composer to attach a file (open editors, git changes, then workspace search). The pick becomes a context chip and the file contents are sent inline with your prompt, so the model does not need a round trip to read it. **+ Attach** adds the current file, all open editors, workspace Problems/diagnostics, or recent integrated-terminal output the same way (terminal output is captured via shell integration after the extension activates). The sidebar shows the compact prompt with chips; the full contents travel in the `muse exec` prompt and the session log. After a turn, files that changed in the git working tree appear as a **Changed files** card and open in canvas as a diff. That is a review of writes Muse already made, not an accept/reject patch flow.
 
-The chat is mode-aware. **Headless** is the default native-chat path and cannot answer interactive approval prompts. **Interactive** uses the integrated Muse terminal for workflows that need approvals or other interactive input. `muse.useTerminal` remains a compatible alias for opening the interactive path. MSP is planned as a future execution backend, not a 2.0 setting.
+**Panel approvals** is the default native-chat mode (Muse 1.4.15+ and VS Code 1.96+). Permission requests show the tool, target and arguments, and only the choices offered by Muse. Optional feedback is sent only with a choice that accepts it. No choice is selected automatically; unmatched actions use Muse's `promptUnmatched` approval mode. Existing policy rules can still allow actions without prompting. The panel keeps the host sandbox enabled and does not use `disableApproval`, `yolo` or exec-only `extraArgs`. **Headless** remains available for `muse exec --json`; **Interactive** opens the integrated terminal for other interactive input. `muse.useTerminal` remains a compatible terminal alias.
+
+Muse's **questions** also appear in the panel: pick one or several offered options, or write an answer (up to 500 characters). Every question needs an answer; nothing is selected automatically. Failed submissions keep your answers for retry. Server settlement or Stop removes the form. Each chat owns its pending questions. Tool failures, rejection, cancellation and timeouts have explicit badges; an exit code is shown only when Muse supplied one.
+
+When a retained session needs interactive approvals, switching to **Headless** or **Windows compatibility** shows a recovery notice before a run can start. Choose **Use Panel approvals** to keep that session, or **Start new session** for the selected mode. Your draft and attachments stay in the composer; the previous session stays in history. Unverifiable existing policies receive the same guard. The picker updates the effective user/workspace/folder setting. See [Session mode transitions](docs/session-mode-transitions.md) for behavior and live validation.
+
+On Windows, a successful sandbox setup check does not guarantee shell execution. **Windows compatibility** mode uses Muse exec's `--enable-shell-tool` while keeping the OS sandbox enabled. It uses your existing Headless permission settings and cannot answer panel approvals/questions; it refuses to run with `muse.yolo` enabled. Background reminders are disabled in this mode to avoid additional Windows sandbox probes. After a consented ancestor-traversal repair, real VS Code tests in a OneDrive workspace verified sandbox identity, file read/write, exit 7, stopping a running shell and successfully running the next command. MSP's separate Windows sandbox failure remains unresolved. See [Windows sandbox runtime diagnostics](docs/windows-sandbox-runtime.md) for evidence and limitations.
+
+Use the header **+**, **New Chat in Editor**, or **Open in Editor Panel** to open an independent editor chat. Each tab owns its session, draft, attachments, transcript, approvals and Stop action. Opening a new chat leaves existing chats running. Editor tabs restore their session and draft after a window reload; running turns stop when the extension host exits. History can reopen a previous conversation. Folder selection is stored separately for each chat.
+
+To keep whole-workspace turn snapshots attributable, only one Muse turn or Undo/Redo operation can use a folder (or overlapping nested folder) at a time. Another chat keeps its draft and asks you to wait or choose a different root. Different workspace roots can run independently. This does not isolate manual edits or other external processes.
 
 Paths to `.md`, `.html`, `.json`/`.jsonl`, `.yml`/`.yaml`, `.toon`, `.csv`/`.tsv`, and `.txt` appear as file chips. Chips are verified on the extension host, so only paths that exist on disk get one. Clicking a chip or a path in chat opens it in the main editor area: the canvas (Preview / Source) for files it can render from the workspace or Muse's data directory (512 KB cap), and a regular editor tab for everything else, including images and files outside those roots. Web URLs open in the browser, as do `.xls(x)`, `.pdf`, and Office documents, which have no in-app renderer. **Open externally** in the canvas still hands the current file to the OS, so an HTML report goes to the system browser.
+
+## Search session history
+
+Click **Session history** or the chat title to search retained sessions in the current workspace. Search checks the title, first message, and session id in the local Muse index, including sessions older than the initial recent list. It returns up to 40 recent matches; narrow the query to find older matches. It does not search every message in a transcript or contact the model.
+
+Use **↑ / ↓** to select a result, **Enter** to resume it, and **Esc** to dismiss the picker and return focus to its header button. The current session, first-message preview, relative update time, turn count, and short session id help distinguish similar conversations.
+
+## Persistent turn diffs and undo
+
+Each native chat turn saves the on-disk contents of Git-tracked and non-ignored workspace files before Muse starts. When the turn ends (including Stop), its before/after changes become a persistent turn card. Click a file to open its saved, read-only **Before ↔ After** diff. These snapshots survive VS Code reloads and remain available after undo.
+
+**Undo this turn** restores that turn's pre-existing working-tree contents, including your earlier staged and unstaged edits. It does not change Git's index, commits, or stashes. New files created during the turn are removed only when they still exactly match the captured result; files deleted during the turn are restored. If any affected file has newer edits, an unsaved editor, or a link/junction substitution, the whole undo is blocked before writing. Undo later turns first when multiple turns touched the same file.
+
+Save workspace editors before sending. Changes made manually or by another program while Muse runs are part of that turn's captured before/after interval, so avoid editing the same files during a run. Ignored files and paths outside the workspace are not checkpointed. A Git workspace is required; checkpoints reject links, files over 4 MB, more than 20,000 files, and snapshots over 64 MB before execution. A process that adds unsupported files can leave its checkpoint unfinished; no unsafe undo is offered for it. Turns interrupted by an extension-host crash retain their pending baseline but do not offer automatic undo.
+
+Snapshots contain local file contents and are stored under this extension's VS Code global storage directory, outside the repository. Completed turn cards are grouped by workspace and Muse session. Historical turns created before this feature do not have snapshots.
+
+After undo, **Redo this turn** reapplies its saved after-version. Redo checks all affected files against the saved pre-turn version first and refuses the whole operation if a file was edited after undo or has an unsaved editor. Both actions preserve the Git index, and their status survives VS Code reloads.
 
 ## Safety
 

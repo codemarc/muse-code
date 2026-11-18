@@ -99,7 +99,6 @@ describe("muse.toolDisplay configuration", () => {
       ]),
     );
     expect(extension).toContain('registerCommand("muse.openMuseAi"');
-    expect(extension).toContain("provider.openMuseAi()");
     expect(provider).toContain('"openMuseAi"');
     expect(provider).toContain('id="muse-ai"');
     expect(provider).toContain("clipboard.writeText");
@@ -179,10 +178,10 @@ describe("muse.toolDisplay configuration", () => {
     const provider = readFileSync(resolve("src/chatViewProvider.ts"), "utf8");
     expect(provider).toContain('"mentionQuery"');
     expect(provider).toContain("handleMentionQuery");
-    expect(provider).toContain("publishTurnReview");
-    expect(provider).toContain("reviewSince");
+    expect(provider).toContain("postTurnReviews");
+    expect(provider).toContain("checkpoints.finish");
     expect(provider).toContain('id="mentions"');
-    expect(provider).toContain("Changed files");
+    expect(provider).toContain("openTurnDiff");
   });
 
   test("activates at startup so the status bar shows without opening chat", () => {
@@ -222,8 +221,8 @@ describe("muse.toolDisplay configuration", () => {
     const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
     const setting =
       pkg.contributes.configuration.properties["muse.executionMode"];
-    expect(setting.default).toBe("headless");
-    expect(setting.enum).toEqual(["headless", "interactive"]);
+    expect(setting.default).toBe("panel");
+    expect(setting.enum).toEqual(["headless", "interactive", "panel", "windows"]);
 
     const provider = readFileSync(resolve("src/chatViewProvider.ts"), "utf8");
     const extension = readFileSync(resolve("src/extension.ts"), "utf8");

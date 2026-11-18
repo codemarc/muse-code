@@ -2,7 +2,7 @@
   "name": "muse-cli-chat",
   "displayName": "Muse CLI Chat",
   "description": "Unofficial VS Code / Cursor sidebar for Meta Muse Code. Wraps the muse CLI (muse exec --json); not affiliated with Meta.",
-	"version": "0.5.1",
+  "version": "0.5.1",
   "publisher": "codemarc",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -20,7 +20,7 @@
   "homepage": "https://github.com/codemarc/muse-code",
   "qna": "https://github.com/codemarc/muse-code/blob/main/PRIVACY.md",
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.96.0"
   },
   "categories": [
     "AI",
@@ -47,6 +47,7 @@
   },
   "main": "./dist/extension.js",
   "activationEvents": [
+    "onWebviewPanel:muse.chatPanel",
     "onStartupFinished"
   ],
   "contributes": {
@@ -54,7 +55,7 @@
       "activitybar": [
         {
           "id": "muse-activity",
-          "title": "Muse CLI Chat",
+          "title": "Muse",
           "icon": "media/muse.svg",
           "when": "muse.doesNotSupportSecondarySidebar"
         }
@@ -62,7 +63,7 @@
       "secondarySidebar": [
         {
           "id": "muse-secondary",
-          "title": "Muse CLI Chat",
+          "title": "Muse",
           "icon": "media/muse.svg",
           "when": "!muse.doesNotSupportSecondarySidebar"
         }
@@ -87,6 +88,19 @@
       ]
     },
     "commands": [
+        {
+          "command": "muse.renameSession",
+          "title": "Muse Code: Rename Conversation"
+        },
+        {
+          "command": "muse.forkSession",
+          "title": "Muse Code: Branch Conversation"
+        },
+      {
+        "command": "muse.newChat",
+        "title": "Muse Code: New Chat",
+        "icon": "$(add)"
+      },
       {
         "command": "muse.openChat",
         "title": "Muse CLI Chat: Open Chat",
@@ -273,6 +287,11 @@
           "group": "navigation"
         },
         {
+          "command": "muse.newChat",
+          "title": "Muse CLI Chat: New Chat in Editor",
+          "icon": "$(add)"
+        },
+        {
           "command": "muse.newSession",
           "when": "view =~ /muse\\.chatView/",
           "group": "1_session@0"
@@ -378,16 +397,21 @@
         },
         "muse.executionMode": {
           "type": "string",
+          "scope": "resource",
           "enum": [
             "headless",
-            "interactive"
+            "interactive",
+            "panel",
+            "windows"
           ],
           "enumDescriptions": [
             "Native chat runs muse exec --json. Interactive approvals are unavailable.",
-            "Open Chat uses the integrated Muse terminal so Muse can ask for approvals and other interactive input."
+            "Open Chat uses the integrated Muse terminal so Muse can ask for approvals and other interactive input.",
+            "Review Muse tool permission requests inside the native chat panel.",
+            "Native Windows chat using Muse exec's sandboxed legacy shell. Uses existing Headless approval settings; interactive panel approvals and questions are unavailable."
           ],
-          "default": "headless",
-          "description": "How Muse CLI Chat executes. Headless is the default JSONL native-chat path. Interactive opens the Muse terminal. MSP is not exposed yet."
+          "default": "panel",
+          "description": "How Muse executes: panel approvals, headless JSONL, sandboxed Windows compatibility, or interactive terminal."
         },
         "muse.model": {
           "type": "string",
@@ -417,7 +441,7 @@
           "type": "boolean",
           "default": false,
           "scope": "application",
-          "markdownDescription": "Pass `--disable-approval` for headless sidebar runs (sandbox stays on unless yolo is enabled). Defaults off; the extension prompts on first send. Prefer **Open Interactive Terminal** for staged approvals. Application-scoped."
+          "markdownDescription": "Pass `--disable-approval` for headless runs (sandbox stays on unless yolo is enabled). Defaults off; the extension prompts on first headless send. Use **Panel approvals** to review permissions inside chat. Application-scoped."
         },
         "muse.yolo": {
           "type": "boolean",
@@ -493,5 +517,8 @@
     "@vscode/vsce": "^3.3.2",
     "esbuild": "^0.25.1",
     "typescript": "^5.8.2"
+  },
+  "dependencies": {
+    "@muse-code/sdk": "1.4.15"
   }
 }

@@ -16,6 +16,7 @@ export type { MuseSettings, ResolveBinaryResult };
 export { buildMuseExecArgs, resolveMuseBinary, sanitizeExtraArgs } from "./museArgs";
 
 export interface MuseRunOptions {
+  windowsShell?: boolean;
   prompt: string;
   workspacePath: string;
   sessionId: string;
@@ -26,7 +27,8 @@ export interface MuseRunOptions {
 }
 
 export interface MuseRunHandle {
-  child: ChildProcess;
+  child?: ChildProcess;
+  settled?: Promise<void>;
   stop: () => void;
 }
 
@@ -105,6 +107,7 @@ export function startMuseExec(opts: MuseRunOptions): MuseRunHandle {
     prompt: opts.prompt,
     workspacePath: opts.workspacePath,
     sessionId: opts.sessionId,
+    windowsShell: opts.windowsShell,
   });
   if (rejectedExtraArgs.length) {
     opts.onRejectedExtraArgs?.(rejectedExtraArgs);
@@ -132,13 +135,20 @@ export function startMuseExec(opts: MuseRunOptions): MuseRunHandle {
     opts.onStderr?.(chunk);
   });
 
+  let exited = false;
+  const finish = (code: number | null, signal: NodeJS.Signals | null) => {
+    if (exited) return;
+    exited = true;
+    opts.onExit?.(code, signal);
+  };
+
   child.on("error", (err) => {
     opts.onEvent({
       kind: "parse_error",
       line: "",
       error: `Failed to start muse: ${err.message}`,
     });
-    opts.onExit?.(null, null);
+    finish(null, null);
   });
 
   let stopRequested = false;
@@ -152,7 +162,7 @@ export function startMuseExec(opts: MuseRunOptions): MuseRunHandle {
     }
     // Windows has no signals: a stopped process just exits with a code, so
     // report the stop the way POSIX callers already expect.
-    opts.onExit?.(code, signal ?? (stopRequested ? "SIGTERM" : null));
+    finish(code, signal ?? (stopRequested ? "SIGTERM" : null));
   });
 
   return {

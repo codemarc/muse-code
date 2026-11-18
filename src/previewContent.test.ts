@@ -143,6 +143,14 @@ describe("sanitizeHtmlFragment", () => {
 });
 
 describe("markdownToHtml", () => {
+  test("keeps underscores inside identifiers while rendering emphasis", () => {
+    const html = markdownToHtml("MUSE_CANLI_TEST_OK foo__bar__baz türkçe_kelime_test _italic_ __bold__");
+    expect(html).toContain("MUSE_CANLI_TEST_OK");
+    expect(html).toContain("foo__bar__baz");
+    expect(html).toContain("türkçe_kelime_test");
+    expect(html).toContain("<em>italic</em>");
+    expect(html).toContain("<strong>bold</strong>");
+  });
   test("renders heading and list", () => {
     const html = markdownToHtml("# Title\n\n- a\n- b\n");
     expect(html).toContain("<h1>");

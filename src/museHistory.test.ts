@@ -13,6 +13,23 @@ const fixture = readFileSync(
 );
 
 describe("museHistory", () => {
+  test("native branch seed public turns precede new turns; internal prefix and duplicate replay stay hidden", () => {
+    const fork = { payload_type: "session.fork.turn", payload: { turn_index: 0,
+      turn: { prompt: "Remember inherited-code", answer: "Parent ready", source: { run_id: "parent-run" } } } };
+    const started = (run_id: string, prompt: string) => ({ payload_type: "runtime.session", payload: { kind: "run", run_id, event: { kind: "started", prompt } } });
+    const result = transcriptFromSessionJsonl([
+      { payload_type: "session.fork.model_prefix", payload: { model_messages: [{ role: "developer", content: "Never display internal prefix" }] } },
+      fork, fork, started("parent-run", "Remember inherited-code"),
+      { payload_type: "runtime.session", payload: { kind: "run", run_id: "parent-run", event: { kind: "assistant_message_committed", text: "Parent ready" } } },
+      started("child-run", "What was the code?"),
+      { payload_type: "runtime.session", payload: { kind: "run", run_id: "child-run", event: { kind: "assistant_message_committed", text: "inherited-code" } } },
+    ].map((r) => JSON.stringify(r)).join("\n"));
+    expect(result).toEqual([
+      { type: "user", text: "Remember inherited-code" }, { type: "assistant", text: "Parent ready" },
+      { type: "user", text: "What was the code?" }, { type: "assistant", text: "inherited-code" },
+    ]);
+  });
+
   test("extracts user, tool, assistant from runtime.session jsonl", () => {
     const items = transcriptFromSessionJsonl(fixture);
     expect(items.map((i) => i.type)).toEqual(["user", "tool", "assistant"]);

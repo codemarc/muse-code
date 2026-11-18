@@ -1,12 +1,16 @@
 import {
   existsSync,
+  readFileSync,
   realpathSync,
   rmSync,
+  statSync,
+  readdirSync,
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { museDataDir, museSessionIndexPath } from "./museDataPaths";
+import { transcriptFromSessionLogPath } from "./museHistory";
 
 export interface MuseSessionSummary {
   sessionId: string;
@@ -95,6 +99,8 @@ function listViaNodeSqlite(
   indexPath: string,
   keys: string[],
   limit: number,
+  query: string,
+  unbound = false,
 ): MuseSessionSummary[] | null {
   try {
     const mod = require("node:sqlite") as typeof import("node:sqlite");
@@ -104,12 +110,12 @@ function listViaNodeSqlite(
       const sql = `
         SELECT ${SESSION_SELECT}
         FROM sessions
-        WHERE workspace_key IN (${placeholders})
-           OR workspace_root IN (${placeholders})
+        WHERE ${unbound ? "(workspace_key IS NULL AND workspace_root IS NULL)" : `(workspace_key IN (${placeholders}) OR workspace_root IN (${placeholders}))`}
+          AND instr(lower(COALESCE(title, '') || char(10) || COALESCE(first_user_prompt, '') || char(10) || session_id), lower(?)) > 0
         ORDER BY updated_at_us DESC, created_at_us DESC
         LIMIT ?
       `;
-      const rows = db.prepare(sql).all(...keys, ...keys, limit) as Record<
+      const rows = db.prepare(sql).all(...(unbound ? [] : [...keys, ...keys]), query, limit) as Record<
         string,
         unknown
       >[];
@@ -130,13 +136,15 @@ function listViaSqliteCli(
   indexPath: string,
   keys: string[],
   limit: number,
+  query: string,
+  unbound = false,
 ): MuseSessionSummary[] {
   const inList = keys.map(sqlQuote).join(", ");
   const sql = `
     SELECT ${SESSION_SELECT}
     FROM sessions
-    WHERE workspace_key IN (${inList})
-       OR workspace_root IN (${inList})
+    WHERE ${unbound ? "(workspace_key IS NULL AND workspace_root IS NULL)" : `(workspace_key IN (${inList}) OR workspace_root IN (${inList}))`}
+      AND instr(lower(COALESCE(title, '') || char(10) || COALESCE(first_user_prompt, '') || char(10) || session_id), lower(${sqlQuote(query)})) > 0
     ORDER BY updated_at_us DESC, created_at_us DESC
     LIMIT ${limit};
   `;
@@ -164,7 +172,7 @@ function listViaSqliteCli(
  */
 export function listMuseSessionsForWorkspace(
   workspacePath: string,
-  opts: { limit?: number; indexPath?: string } = {},
+  opts: { limit?: number; indexPath?: string; query?: string } = {},
 ): MuseSessionSummary[] {
   const limit = Math.max(1, Math.min(opts.limit ?? 40, 100));
   const indexPath = opts.indexPath ?? museSessionIndexPath();
@@ -176,11 +184,97 @@ export function listMuseSessionsForWorkspace(
     return [];
   }
 
-  const viaNode = listViaNodeSqlite(indexPath, keys, limit);
-  if (viaNode !== null) {
-    return viaNode;
+  const query = (opts.query ?? "").trim().slice(0, 256);
+  const bound = listViaNodeSqlite(indexPath, keys, limit, query) ?? listViaSqliteCli(indexPath, keys, limit, query);
+  // Muse MSP can clear both workspace columns when resuming an indexed session.
+  // Recover only rows with positive local-log workspace evidence, without writing
+  // to Muse's index or admitting another workspace's conversations to this list.
+  const unboundQuery = /^[a-f0-9-]{36}$/i.test(query) ? query : "";
+  const unbound = listViaNodeSqlite(indexPath, keys, 500, unboundQuery, true) ?? listViaSqliteCli(indexPath, keys, 500, unboundQuery, true);
+  const recovered: MuseSessionSummary[] = [];
+  for (const session of unbound) {
+    const metadata = session.sessionLogPath ? retainedSessionMetadata(session.sessionLogPath) : null;
+    if (!metadata?.workspaceRoot || !keys.some((key) => normalizedWorkspaceKey(key) === normalizedWorkspaceKey(metadata.workspaceRoot!))) continue;
+    const candidate = { ...session, workspaceRoot: metadata.workspaceRoot,
+      firstUserPrompt: session.firstUserPrompt ?? metadata.firstPrompt,
+      title: session.title === session.sessionId ? metadata.firstPrompt || session.title : session.title };
+    if ([candidate.title, candidate.firstUserPrompt ?? "", candidate.sessionId].join("\n").toLowerCase().includes(query.toLowerCase())) recovered.push(candidate);
   }
-  return listViaSqliteCli(indexPath, keys, limit);
+  return [...bound, ...recovered].sort((a, b) => b.updatedAtUs - a.updatedAtUs || b.createdAtUs - a.createdAtUs).slice(0, limit);
+}
+
+function normalizedWorkspaceKey(path: string): string {
+  return process.platform === "win32" ? path.replace(/^\\\\\?\\/, "").replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase() : path;
+}
+
+const metadataCache = new Map<string, { stamp: string; workspaceRoot: string | null; firstPrompt: string | null }>();
+const branchPaths = new Map<string, string>();
+
+/** Only for extension-registered native forks: some Windows hosts omit their index row. */
+export function retainedBranchForWorkspace(workspace: string, id: string, parentId: string,
+  sessionsRoot = join(museDataDir(), "sessions")): MuseSessionSummary | undefined {
+  if (![id, parentId].every((value) => /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(value))) return;
+  const cacheKey = `${sessionsRoot}:${id}`;
+  let path = branchPaths.get(cacheKey);
+  try {
+    if (!path || !existsSync(path)) {
+      let remaining = 2048;
+      const dirs = (at: string, pattern: RegExp) => readdirSync(at, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && pattern.test(entry.name)).map((entry) => entry.name).sort().reverse();
+      outer: for (const year of dirs(sessionsRoot, /^\d{4}$/)) {
+        for (const month of dirs(join(sessionsRoot, year), /^(0[1-9]|1[0-2])$/)) {
+          for (const day of dirs(join(sessionsRoot, year, month), /^(0[1-9]|[12]\d|3[01])$/)) {
+            if (--remaining < 0) break outer;
+            const candidate = join(sessionsRoot, year, month, day, id, "session.jsonl");
+            if (existsSync(candidate)) { path = candidate; break outer; }
+          }
+        }
+      }
+    }
+    if (!path || !isPathInsideJail(path, sessionsRoot)) return;
+    const info = statSync(path);
+    if (!info.isFile() || info.size > 32 * 1024 * 1024) return;
+    const first = readFileSync(path, "utf8").split("\n", 1)[0];
+    const created = JSON.parse(first);
+    if (created.payload_type !== "session.fork.created" || created.payload?.fork_session_id !== id || created.payload?.source_session_id !== parentId) return;
+    const metadata = retainedSessionMetadata(path);
+    if (metadata?.workspaceRoot && normalizedWorkspaceKey(metadata.workspaceRoot) !== normalizedWorkspaceKey(workspace)) return;
+    branchPaths.set(cacheKey, path);
+    const items = transcriptFromSessionLogPath(path);
+    const prompts = items.filter((item) => item.type === "user");
+    return { sessionId: id, title: prompts[0]?.text ?? id, firstUserPrompt: prompts[0]?.text ?? null,
+      workspaceRoot: workspace, updatedAtUs: info.mtimeMs * 1000, createdAtUs: info.birthtimeMs * 1000,
+      promptCount: prompts.length, sessionLogPath: path, sessionDir: join(path, ".."), status: "" };
+  } catch { return; }
+}
+function retainedSessionMetadata(path: string) {
+  try {
+    const info = statSync(path);
+    if (!info.isFile() || info.size > 32 * 1024 * 1024) return null;
+    const stamp = `${info.mtimeMs}:${info.size}`;
+    const cached = metadataCache.get(path);
+    if (cached?.stamp === stamp) return cached;
+    let workspaceRoot: string | null = null;
+    let firstPrompt: string | null = null;
+    for (const line of readFileSync(path, "utf8").split("\n")) {
+      if (!line.includes('"workspace_root"') && !line.includes('"started"')) continue;
+      try {
+        const row = JSON.parse(line);
+        const root = row.payload_type === "runtime.command_intake.received" && row.payload?.record?.command?.kind === "session_start"
+          ? row.payload.record.command.session_metadata?.workspace_root
+          : row.payload_type === "runtime.session_start.intake_v3" ? row.payload?.payload?.session_metadata?.workspace_root
+          : row.payload_type === "runtime.session.metadata" && row.payload?.kind === "metadata" ? row.payload?.record?.workspace_root
+          : row.payload_type === "session.workspace_branch.observed" ? row.payload?.record?.workspace_root : undefined;
+        if (typeof root === "string" && root) workspaceRoot = root;
+        if (!firstPrompt && row.payload_type === "runtime.session" && row.payload?.kind === "run" && row.payload.event?.kind === "started" && typeof row.payload.event.prompt === "string") firstPrompt = row.payload.event.prompt.slice(0, 256);
+      } catch { /* Partial/unrelated records do not establish workspace ownership. */ }
+    }
+    const result = { stamp, workspaceRoot, firstPrompt };
+    if (statSync(path).size !== info.size) return null;
+    if (metadataCache.size >= 128) metadataCache.delete(metadataCache.keys().next().value!);
+    metadataCache.set(path, result);
+    return result;
+  } catch { return null; }
 }
 
 export function formatSessionPickLabel(session: MuseSessionSummary): string {

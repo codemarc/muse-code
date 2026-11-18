@@ -121,10 +121,16 @@ export function sanitizeExtraArgs(extraArgs: string[] | undefined): {
   return { allowed, rejected };
 }
 
+/** Provider a run uses; a session must keep using the provider it started with. */
+export function museProviderId(settings: Pick<MuseSettings, "useEchoProvider">): "echo" | "meta" {
+  return settings.useEchoProvider ? "echo" : "meta";
+}
+
 export function buildMuseExecArgs(
   settings: MuseSettings,
-  opts: { prompt: string; workspacePath: string; sessionId: string },
+  opts: { prompt: string; workspacePath: string; sessionId: string; windowsShell?: boolean },
 ): { args: string[]; rejectedExtraArgs: string[] } {
+  if (opts.windowsShell && settings.yolo) throw new Error("Turn off muse.yolo before using sandboxed Windows compatibility mode.");
   const args = [
     "exec",
     "--json",
@@ -133,6 +139,12 @@ export function buildMuseExecArgs(
     "--session-id",
     opts.sessionId,
   ];
+
+  // MSP stores a normal Windows path while exec canonicalizes it with \\?\.
+  // The workspace is selected and validated by the host before this call.
+  // Windows reminder probes can leave an internal read-worker refreshing
+  // profile ACLs after exec exits and block the next sandbox admission.
+  if (opts.windowsShell) args.push("--enable-shell-tool", "--allow-workspace-switch", "--disable-reminders");
 
   if (settings.yolo) {
     args.push("--yolo");
@@ -145,14 +157,17 @@ export function buildMuseExecArgs(
     }
   }
 
-  if (settings.useEchoProvider) {
-    args.push("--provider", "echo");
-  }
-  if (settings.model.trim()) {
-    args.push("--model", settings.model.trim());
-  }
-  if (settings.reasoningEffort.trim()) {
-    args.push("--reasoning-effort", settings.reasoningEffort.trim());
+  // Always name the provider: a Muse session keeps the provider it was created
+  // with, so leaving it implicit silently reuses echo after echo is turned off.
+  args.push("--provider", museProviderId(settings));
+  if (!settings.useEchoProvider) {
+    // Echo rejects --model / --reasoning-effort and exits without a reply.
+    if (settings.model.trim()) {
+      args.push("--model", settings.model.trim());
+    }
+    if (settings.reasoningEffort.trim()) {
+      args.push("--reasoning-effort", settings.reasoningEffort.trim());
+    }
   }
 
   const { allowed, rejected } = sanitizeExtraArgs(settings.extraArgs);
@@ -160,6 +175,7 @@ export function buildMuseExecArgs(
     args.push(...allowed);
   }
 
-  args.push(opts.prompt);
+  // "--" ends option parsing, so a prompt such as "--yolo …" stays a prompt.
+  args.push("--", opts.prompt);
   return { args, rejectedExtraArgs: rejected };
 }

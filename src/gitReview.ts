@@ -1,4 +1,8 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readFile, stat } from "node:fs/promises";
+import { resolve } from "node:path";
+import { isUnderWorkspace } from "./canvasFile";
 
 export interface ChangedFile {
   path: string;
@@ -8,6 +12,33 @@ export interface ChangedFile {
 export interface GitSnapshot {
   files: ChangedFile[];
   diff: string;
+  fingerprints?: Record<string, string>;
+}
+
+/** Porcelain -z preserves spaces, Unicode and literal arrows in file names. */
+export function parsePorcelainZ(text: string): ChangedFile[] {
+  const parts = text.split("\0");
+  const files: ChangedFile[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    const entry = parts[i];
+    if (entry.length < 4) continue;
+    const code = entry.slice(0, 2);
+    files.push({ path: entry.slice(3), status: code.trim() || "M" });
+    if (/[RC]/.test(code)) i += 1; // -z puts the destination before the source.
+  }
+  return files;
+}
+
+async function fingerprintFile(cwd: string, path: string): Promise<string> {
+  const absolute = resolve(cwd, path);
+  if (!isUnderWorkspace(absolute, cwd)) return "outside";
+  try {
+    const info = await stat(absolute);
+    if (!info.isFile()) return "not-file";
+    // Avoid loading large binaries into the extension host.
+    if (info.size > 2_000_000) return `large:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+    return createHash("sha256").update(await readFile(absolute)).digest("hex");
+  } catch { return "missing"; }
 }
 
 const REVIEW_DIFF_MAX = 160_000;
@@ -60,7 +91,7 @@ export function formatReviewMarkdown(
   const lines = [
     "# Changed files",
     "",
-    "Working-tree changes since this Muse turn started. Already written to disk.",
+    "Files changed during this Muse turn. Already written to disk. Git diffs below show the current working tree and may include earlier edits.",
     "",
   ];
   for (const file of files) {
@@ -108,13 +139,16 @@ export function runGit(
 export async function readGitSnapshot(cwd: string): Promise<GitSnapshot> {
   const status = await runGit(cwd, [
     "status",
-    "--porcelain",
-    "--untracked-files=normal",
+    "--porcelain=v1",
+    "-z",
+    "--untracked-files=all",
   ]);
   if (!status.ok) {
     return { files: [], diff: "" };
   }
-  const files = parsePorcelain(status.stdout);
+  const files = parsePorcelainZ(status.stdout);
+  const fingerprints: Record<string, string> = Object.create(null);
+  for (const file of files) fingerprints[file.path] = await fingerprintFile(cwd, file.path);
   const tracked = files.filter((file) => file.status !== "??").map((f) => f.path);
   let diff = "";
   if (tracked.length > 0) {
@@ -123,7 +157,7 @@ export async function readGitSnapshot(cwd: string): Promise<GitSnapshot> {
       diff = result.stdout;
     }
   }
-  return { files, diff };
+  return { files, diff, fingerprints };
 }
 
 export async function reviewSince(
@@ -131,7 +165,15 @@ export async function reviewSince(
   before: GitSnapshot,
 ): Promise<{ files: ChangedFile[]; markdown: string; diff: string }> {
   const after = await readGitSnapshot(cwd);
-  const files = filesChangedSince(before.files, after.files);
+  const statusChanges = new Set(filesChangedSince(before.files, after.files).map((file) => file.path));
+  const files = after.files.filter((file) => statusChanges.has(file.path) ||
+    (before.fingerprints && after.fingerprints && before.fingerprints[file.path] !== after.fingerprints[file.path]));
+  for (const file of before.files) {
+    if (!after.files.some((next) => next.path === file.path)) {
+      const fingerprint = await fingerprintFile(cwd, file.path);
+      if (before.fingerprints?.[file.path] !== fingerprint) files.push({ path: file.path, status: fingerprint === "missing" ? "D" : "clean" });
+    }
+  }
   const tracked = files.filter((file) => file.status !== "??").map((f) => f.path);
   let diff = "";
   if (tracked.length > 0) {

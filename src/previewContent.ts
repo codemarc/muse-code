@@ -569,9 +569,9 @@ function inlineMd(text: string): string {
     return `<a href="${escapeAttr(href)}">${label}</a>`;
   });
   s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-  s = s.replace(/__(.+?)__/g, "<strong>$1</strong>");
+  s = s.replace(/(?<![\p{L}\p{N}_])__(.+?)__(?![\p{L}\p{N}_])/gu, "<strong>$1</strong>");
   s = s.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, "<em>$1</em>");
-  s = s.replace(/(?<!_)_(?!_)(.+?)(?<!_)_(?!_)/g, "<em>$1</em>");
+  s = s.replace(/(?<![\p{L}\p{N}_])_(?!_)(.+?)(?<!_)_(?![\p{L}\p{N}_])/gu, "<em>$1</em>");
   s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
   return s;
 }
