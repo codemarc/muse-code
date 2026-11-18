@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const BLOCKED_SCHEME = /^(javascript|data|vbscript):/i;
 
@@ -73,16 +74,21 @@ export function classifyToolLink(
     return { kind: "http", href: trimmed };
   }
 
-  if (trimmed.startsWith("file://")) {
+  if (/^file:\/\//i.test(trimmed)) {
     try {
-      const decoded = decodeURIComponent(trimmed.replace(/^file:\/\//i, ""));
-      return { kind: "file", filePath: decoded };
+      // fileURLToPath maps file:///C:/x to C:\x on Windows.
+      return { kind: "file", filePath: fileURLToPath(trimmed) };
     } catch {
-      return null;
+      try {
+        const decoded = decodeURIComponent(trimmed.replace(/^file:\/\//i, ""));
+        return { kind: "file", filePath: decoded };
+      } catch {
+        return null;
+      }
     }
   }
 
-  if (trimmed === "~" || trimmed.startsWith("~/")) {
+  if (trimmed === "~" || trimmed.startsWith("~/") || trimmed.startsWith("~\\")) {
     return { kind: "file", filePath: path.join(homedir(), trimmed.slice(1)) };
   }
 

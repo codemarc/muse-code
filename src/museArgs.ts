@@ -1,5 +1,12 @@
 import { existsSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
+import {
+  defaultWindowsResolveDeps,
+  isWindowsShimPath,
+  resolveWindowsMuseCommand,
+  resolveWindowsShimPath,
+  type WindowsResolveDeps,
+} from "./museWindows";
 
 export interface MuseSettings {
   executablePath: string;
@@ -28,8 +35,15 @@ const BLOCKED_EXTRA_FLAGS = new Set([
  * - `"muse"` (default): leave to PATH (no silent ~/.local preference).
  * - Absolute or relative path: must exist and be a regular file.
  * - Other bare names are rejected (prevents accidental / malicious aliases).
+ * - Windows: `"muse"` and paths to the `muse.cmd` launcher shim resolve to the
+ *   versioned `muse-bin-<version>.exe`, since `.cmd` files cannot be spawned
+ *   with `shell: false` (see museWindows.ts).
  */
-export function resolveMuseBinary(configured: string): ResolveBinaryResult {
+export function resolveMuseBinary(
+  configured: string,
+  platform: NodeJS.Platform = process.platform,
+  windowsDeps: WindowsResolveDeps = defaultWindowsResolveDeps,
+): ResolveBinaryResult {
   const trimmed = (configured || "muse").trim();
   if (!trimmed) {
     return { ok: false, error: "muse.executablePath is empty." };
@@ -65,6 +79,9 @@ export function resolveMuseBinary(configured: string): ResolveBinaryResult {
       const msg = err instanceof Error ? err.message : String(err);
       return { ok: false, error: `Cannot stat muse.executablePath: ${msg}` };
     }
+    if (platform === "win32" && isWindowsShimPath(trimmed)) {
+      return resolveWindowsShimPath(trimmed, windowsDeps);
+    }
     return { ok: true, path: trimmed };
   }
 
@@ -73,6 +90,10 @@ export function resolveMuseBinary(configured: string): ResolveBinaryResult {
       ok: false,
       error: `muse.executablePath must be "muse" or a filesystem path to the binary (got "${trimmed}").`,
     };
+  }
+
+  if (platform === "win32") {
+    return resolveWindowsMuseCommand(windowsDeps);
   }
 
   return { ok: true, path: "muse" };
@@ -100,10 +121,16 @@ export function sanitizeExtraArgs(extraArgs: string[] | undefined): {
   return { allowed, rejected };
 }
 
+/** Provider a run uses; a session must keep using the provider it started with. */
+export function museProviderId(settings: Pick<MuseSettings, "useEchoProvider">): "echo" | "meta" {
+  return settings.useEchoProvider ? "echo" : "meta";
+}
+
 export function buildMuseExecArgs(
   settings: MuseSettings,
-  opts: { prompt: string; workspacePath: string; sessionId: string },
+  opts: { prompt: string; workspacePath: string; sessionId: string; windowsShell?: boolean },
 ): { args: string[]; rejectedExtraArgs: string[] } {
+  if (opts.windowsShell && settings.yolo) throw new Error("Turn off muse.yolo before using sandboxed Windows compatibility mode.");
   const args = [
     "exec",
     "--json",
@@ -112,6 +139,12 @@ export function buildMuseExecArgs(
     "--session-id",
     opts.sessionId,
   ];
+
+  // MSP stores a normal Windows path while exec canonicalizes it with \\?\.
+  // The workspace is selected and validated by the host before this call.
+  // Windows reminder probes can leave an internal read-worker refreshing
+  // profile ACLs after exec exits and block the next sandbox admission.
+  if (opts.windowsShell) args.push("--enable-shell-tool", "--allow-workspace-switch", "--disable-reminders");
 
   if (settings.yolo) {
     args.push("--yolo");
@@ -124,14 +157,17 @@ export function buildMuseExecArgs(
     }
   }
 
-  if (settings.useEchoProvider) {
-    args.push("--provider", "echo");
-  }
-  if (settings.model.trim()) {
-    args.push("--model", settings.model.trim());
-  }
-  if (settings.reasoningEffort.trim()) {
-    args.push("--reasoning-effort", settings.reasoningEffort.trim());
+  // Always name the provider: a Muse session keeps the provider it was created
+  // with, so leaving it implicit silently reuses echo after echo is turned off.
+  args.push("--provider", museProviderId(settings));
+  if (!settings.useEchoProvider) {
+    // Echo rejects --model / --reasoning-effort and exits without a reply.
+    if (settings.model.trim()) {
+      args.push("--model", settings.model.trim());
+    }
+    if (settings.reasoningEffort.trim()) {
+      args.push("--reasoning-effort", settings.reasoningEffort.trim());
+    }
   }
 
   const { allowed, rejected } = sanitizeExtraArgs(settings.extraArgs);
@@ -139,6 +175,7 @@ export function buildMuseExecArgs(
     args.push(...allowed);
   }
 
-  args.push(opts.prompt);
+  // "--" ends option parsing, so a prompt such as "--yolo …" stays a prompt.
+  args.push("--", opts.prompt);
   return { args, rejectedExtraArgs: rejected };
 }

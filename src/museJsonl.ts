@@ -25,11 +25,14 @@ export interface MuseRecord {
 export type MuseUiEvent =
   | { kind: "user"; prompt: string; sessionId?: string }
   | { kind: "assistant_delta"; text: string }
+  | { kind: "assistant_begin" }
   | { kind: "assistant_final"; text: string; terminal: string; reason?: string | null }
   | { kind: "status"; text: string }
   | {
       kind: "tool";
       name: string;
+      callId?: string;
+      status?: string;
       resultRaw: string;
       resultView: string | null;
       execMeta?: ExecMeta;
@@ -83,12 +86,14 @@ export function recordToUiEvent(record: MuseRecord): MuseUiEvent | null {
       return { kind: "assistant_final", text, terminal, reason };
     }
     case "tool.result": {
+      const facts = payload.correlation_facts as { tool_name?: unknown } | undefined;
       const name = String(
-        payload.tool_name ?? payload.name ?? payload.tool ?? "tool",
+        payload.tool_name ?? payload.name ?? payload.tool ?? facts?.tool_name ?? "tool",
       );
       const rawValue = payload.result ?? payload.output ?? payload;
       const formatted = formatToolResult(rawValue);
-      return { kind: "tool", name, ...formatted };
+      const text = rawValue === payload && typeof payload.text === "string" ? payload.text : undefined;
+      return { kind: "tool", name, ...formatted, resultView: formatted.resultView ?? text ?? null };
     }
     case "runtime.command.accepted":
     case "session.run.linked":

@@ -47,7 +47,7 @@ export function buildMuseStatusTooltip(opts: {
   if (opts.modeDescription) {
     lines.push("", opts.modeDescription);
   }
-  lines.push("", "Click to open Muse chat.");
+  lines.push("", "Click to show or hide the Muse chat.");
   return lines.join("\n");
 }
 

@@ -17,9 +17,10 @@ export async function ensureHeadlessConsent(): Promise<boolean> {
   const choice = await vscode.window.showWarningMessage(
     "Sidebar chat runs Muse headless, so it cannot answer interactive approval prompts. Enable disable-approval for this machine? The OS sandbox stays on. Prefer Open Interactive Terminal when you want staged approvals.",
     { modal: true },
+    // Modal dialogs already get a Cancel button (returns undefined); adding
+    // our own "Cancel" shows it twice on Windows and Linux.
     "Enable disable-approval",
     "Open Interactive Terminal",
-    "Cancel",
   );
 
   if (choice === "Enable disable-approval") {

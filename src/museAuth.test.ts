@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import {
   defaultKeychainHasMetaCredential,
   defaultMuseAuthPath,
@@ -8,7 +9,7 @@ import {
 describe("defaultMuseAuthPath", () => {
   test("uses XDG_CONFIG_HOME when set", () => {
     expect(defaultMuseAuthPath({ XDG_CONFIG_HOME: "/custom/cfg" })).toBe(
-      "/custom/cfg/muse/auth.json",
+      join("/custom/cfg", "muse", "auth.json"),
     );
   });
 });

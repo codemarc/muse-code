@@ -6,6 +6,11 @@ import {
 } from "./executionMode";
 
 describe("execution mode", () => {
+  test("recognizes the explicit sandboxed Windows compatibility path", () => {
+    expect(normalizeExecutionMode("windows")).toBe("windows");
+    expect(EXECUTION_MODE_LABELS.windows).toBe("Windows compatibility");
+    expect(executionModeDescription("windows")).toContain("Headless permission");
+  });
   test("defaults unknown values to the safe headless mode", () => {
     expect(normalizeExecutionMode(undefined)).toBe("headless");
     expect(normalizeExecutionMode("msp")).toBe("headless");

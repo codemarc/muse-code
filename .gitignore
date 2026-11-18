@@ -1,5 +1,10 @@
 node_modules/
+.npm-cache/
+test-results.log
+mode-test-results.log
+mode-history-tests.log
 dist/
 *.vsix
 .DS_Store
 .worktrees/
+.muse-schema/

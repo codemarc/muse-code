@@ -1,5 +1,94 @@
 # Changelog
 
+## Unreleased
+
+### Muse 1.4.20 compatibility
+
+- Show the tool name and readable stdout for the newer exec tool result format. Keep the original payload available in Raw view.
+
+### Conversation names and branching
+
+- Add persistent workspace-scoped conversation names in headers, editor tabs and searchable history, retaining drafts and ancestry. Use extension-owned metadata because Muse's Windows native rename endpoint reports unsupported; no CLI database/log edits.
+- Branch all completed turns using Muse's native session/fork and open the confirmed independent session in a new editor chat. Preserve the source draft and folder, show parent provenance, retain permission guards and serialize with other workspace operations.
+- Fork directly without resume, avoiding the known Windows resume metadata side effect. Bound operation time, disable conflicting controls, validate the returned id and do not automatically retry an ambiguous outcome.
+- Restore registered forks omitted from Muse's index through bounded, ancestry-validated local-log discovery. Render committed fork-seed public turns before later turns, excluding internal model context. Real parent/child context, independent names/drafts, reload, history search and narrow-panel checks passed; 302 tests / 947 assertions passed.
+
+### Muse interface and conversation continuity
+
+- Use Muse's original blue logo and published palette across the header, welcome screen, Send button and editor icons; retain native theme surfaces, accessible focus and high-contrast variants. Record artwork provenance in `media/BRAND.md`.
+- Prepare the next draft while Muse works. Stop, completion, transcript refresh and window reload preserve it; sending remains an explicit action after the current turn ends.
+- Add **Use as draft** to prior requests. Restore retained explicit context descriptors, protect an occupied composer and warn when older context needs reattaching. This creates a new turn without rewriting history or automatically replaying tools.
+- Declare the existing New Chat command in the extension manifest.
+- Validate with real model responses in VS Code: draft during streaming, Stop of an active response, reload retention, context reuse after reload, light/dark/high-contrast themes and a narrow panel. TypeScript and 296 tests / 914 assertions passed. See `docs/extension-ux-status.md` for scope and remaining gaps.
+
+### Session mode transitions
+
+- Inspect retained approval policy before exec starts. Panel-to-Headless/Windows transitions show explicit recovery actions instead of entering a hidden approval wait; drafts and attachments survive both recovery and reload. Existing session policies are preserved.
+- Offer Use Panel approvals for the same session or Start new session for the selected mode. Guard stale session/mode actions and revalidate on submit under the workspace lease.
+- Make executionMode resource-scoped and update its effective setting so a workspace/folder override no longer silently defeats the mode picker. Report setting-write failures in chat.
+- Recover MSP-cleared workspace metadata from bounded, verified local session logs for history and mode checks, without writing the CLI index or mixing other workspace histories.
+- Live VS Code validation: blocked send left the old session log unchanged; same-session Panel recovery and new-session Windows recovery both returned real model markers; draft/Problems attachment and reload preservation, narrow layout, and old-session history search passed. 290 tests / 849 assertions passed.
+
+### Windows shell compatibility
+
+- Add an explicit Windows compatibility mode using exec's legacy shell with the OS sandbox enabled and existing Headless permissions. Reject yolo in this mode; panel approvals/questions remain available in Panel mode only.
+- Allow exec to resume a validated Windows workspace whose stored MSP path differs by the canonical verbatim prefix.
+- Verify real VS Code shell execution inside OneDrive after explicitly approved ancestor traversal repair: sandbox identity, controlled file read/write, exit 7, Stop during a running command, and the next successful command. MSP still reports sandbox unavailable despite ready setup.
+- Disable background reminders in Windows compatibility mode after a live run left an internal read worker and the next sandbox admission timed out on the ACL publication lock. Subsequent controlled exit/Stop/recovery tests passed; this is a compatibility workaround, not a host-runtime fix.
+- Provide a preview-first, non-inherited ancestor traversal repair with ACL backup and guarded rollback on partial failure. Use target-only DACL publication to avoid Set-Acl reprocessing existing child inheritance. Document the requirement to start a new chat when switching from Panel approvals, whose stored policy can otherwise leave exec waiting for hidden approval.
+
+### In-panel questions and tool outcomes
+
+- Answer Muse `request_user_input` questions inside chat: single/multiple selection, custom answers, selection limits, retry without losing edits, stale/duplicate-answer guards, and Stop cleanup.
+- Keep each chat's question queue independent and render pending requests from the SDK fold without replacing its notification handler.
+- Show explicit failed/rejected/cancelled/timed-out tool badges without inventing exit codes. Preserve SDK command/exit/outcome facts by tool-call id when refreshing history.
+- Document a locally reproduced Windows runtime problem: official sandbox setup/check reports ready, but Muse 1.4.15 MSP shell execution still fails. Shell support is not claimed from readiness alone.
+
+### Panel approvals and independent chats
+
+- Add the default **Panel approvals** mode using Muse's MSP SDK: explicit server-offered choices, grant scope, optional feedback, stale-stage guards, streamed replies and Stop while waiting for permission. Headless JSONL and interactive terminal modes remain available.
+- Open independent editor chats with separate session/transcript caches, drafts, approvals, folder choices and cancellation. Restore editor chat identities and drafts after window reload.
+- Guard whole-workspace checkpoints against overlapping turns or restores from another chat; retain the blocked chat's draft. Different workspace roots can run independently.
+- Require VS Code 1.96+ for the SDK's Node 20 runtime. Native panel mode targets Muse 1.4.15+ and creates UUIDv7 session ids.
+
+### Session history
+
+- Search the workspace's retained session index by title, first prompt, or session id before applying the recent-results limit.
+- Add focused search, arrow-key selection, Enter to resume, Escape to dismiss, empty states, and stale-response protection to the history picker.
+
+### Turn checkpoints
+
+- Reapply an undone turn with guarded Redo; newer edits and unsaved buffers block it without changing any files.
+
+- Persist per-turn before/after snapshots outside the repository; open immutable native VS Code diffs after reload.
+- Undo a completed turn without resetting the Git index or discarding pre-turn working-tree edits. Later file edits or unsaved buffers block the entire undo.
+- Capture stopped turns after the process closes; keep incomplete checkpoints unavailable for unsafe undo.
+
+### Added
+
+- **Windows support.** Muse Code now ships for Windows, so the extension no longer refuses `win32`:
+  - `muse.executablePath: "muse"` resolves to the signed `muse-bin-<version>.exe` named by `.muse-version` in `%LOCALAPPDATA%\Programs\muse` (then install dirs / `muse.exe` on `PATH`). The `muse.cmd` shim cannot be spawned with `shell: false`, and going through `cmd.exe` would shell-parse prompts, so it is never used; a configured `muse.cmd` path maps to the exe beside it
+  - Stop kills the whole process tree with `taskkill /T` (Windows has no SIGINT/SIGTERM), and still reports the turn as Interrupted
+  - Session history matches Muse's Windows index keys (`C:\…` and `\\?\C:\…`) even though VS Code reports `c:\…`
+  - Editor context (open editors, Problems) and file chips/links understand backslash and drive-letter paths; `file:///C:/…` links map to `C:\…`; local `.html` reports open with Explorer
+- CI runs typecheck and tests on `windows-latest` as well as Ubuntu
+- **Chat lives in the secondary (right) side bar** on VS Code 1.106+, so Explorer stays visible while Muse works. Both a secondary-side-bar and an activity-bar container are declared and a context key (`muse.doesNotSupportSecondarySidebar`) picks one, the same pattern Codex and Claude Code use; Cursor and older VS Code keep the activity-bar view. Cursor may log a warning about the secondary-side-bar contribution at startup
+- **Editor title toggle** (`muse.toggleChat`): one click shows the chat, a second click hides its side bar
+
+### Changed
+
+- **Chat panel layout.** One-line header (name, session id, history and new-session icons); a single composer box with the attach button, mode/model/effort, and one Send/Stop button inside it; the duplicate History button and the always-on help text are gone. Tips and the unofficial notice now show in an empty-state welcome instead. Assistant replies render as plain text without a card, tool calls as compact rows with a green/red status dot, and inline code, code blocks and links use theme colors. Icons are inline SVG because the webview CSP blocks icon fonts
+- View toolbar keeps the Open in Editor Panel icon; session, view and link actions moved to the `…` menu
+- Run-setting pills sit under the input box with short labels (`Headless`, `Model auto`, `Effort default`; full text in the tooltip) so they never truncate in a narrow side bar
+- **In-chat pickers.** Mode, model and effort pills open dropdowns that update the setting directly (model list: known ids, models named in Muse's own settings.json, the current one, and "Other model…"); the history button opens a session dropdown (new session, resume with relative time and turn count, clean up)
+- **Inline @ mentions.** Picking a file with `@` keeps `@path` in the prompt instead of moving it to a chip above; its contents are attached at send time while the token is still in the text, and user messages render the token as an inline pill
+- **Working indicator** while a turn runs; the redundant "Run started" line and raw unknown JSONL events are no longer shown
+- Echo replies no longer show the `<attached-context>` block
+- Header shows the chat title (first prompt, from the Muse index) instead of the session hash; "New chat" until the first turn
+- `@file` tokens are highlighted while typing (a mirror layer behind the textarea, built from text nodes) and stay highlighted after the transcript is rebuilt from history
+- The model picker can switch the echo (offline test) provider off and on; the pill reads "Echo" while it is on
+- Container title is now "Muse"; with `workbench.secondarySideBar.showLabels` off, VS Code shows the Muse icon instead
+
 ## 0.5.1 - 2026-11-01
 
 ### Added

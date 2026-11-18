@@ -16,6 +16,7 @@ export type { MuseSettings, ResolveBinaryResult };
 export { buildMuseExecArgs, resolveMuseBinary, sanitizeExtraArgs } from "./museArgs";
 
 export interface MuseRunOptions {
+  windowsShell?: boolean;
   prompt: string;
   workspacePath: string;
   sessionId: string;
@@ -26,8 +27,28 @@ export interface MuseRunOptions {
 }
 
 export interface MuseRunHandle {
-  child: ChildProcess;
+  child?: ChildProcess;
+  settled?: Promise<void>;
   stop: () => void;
+}
+
+/**
+ * `child.kill()` on Windows calls TerminateProcess on muse only, orphaning the
+ * shells/dev servers it started. `taskkill /T` ends the whole tree.
+ */
+function killWindowsProcessTree(child: ChildProcess): void {
+  if (child.exitCode !== null || child.pid === undefined) {
+    return;
+  }
+  const systemRoot = process.env.SystemRoot || "C:\\Windows";
+  const killer = spawn(
+    `${systemRoot}\\System32\\taskkill.exe`,
+    ["/PID", String(child.pid), "/T", "/F"],
+    { stdio: "ignore", shell: false, windowsHide: true },
+  );
+  killer.on("error", () => {
+    child.kill();
+  });
 }
 
 export function readMuseSettings(): MuseSettings {
@@ -86,6 +107,7 @@ export function startMuseExec(opts: MuseRunOptions): MuseRunHandle {
     prompt: opts.prompt,
     workspacePath: opts.workspacePath,
     sessionId: opts.sessionId,
+    windowsShell: opts.windowsShell,
   });
   if (rejectedExtraArgs.length) {
     opts.onRejectedExtraArgs?.(rejectedExtraArgs);
@@ -113,14 +135,23 @@ export function startMuseExec(opts: MuseRunOptions): MuseRunHandle {
     opts.onStderr?.(chunk);
   });
 
+  let exited = false;
+  const finish = (code: number | null, signal: NodeJS.Signals | null) => {
+    if (exited) return;
+    exited = true;
+    opts.onExit?.(code, signal);
+  };
+
   child.on("error", (err) => {
     opts.onEvent({
       kind: "parse_error",
       line: "",
       error: `Failed to start muse: ${err.message}`,
     });
-    opts.onExit?.(null, null);
+    finish(null, null);
   });
+
+  let stopRequested = false;
 
   child.on("close", (code, signal) => {
     const rest = buffer.flush();
@@ -129,12 +160,19 @@ export function startMuseExec(opts: MuseRunOptions): MuseRunHandle {
         opts.onEvent(event);
       }
     }
-    opts.onExit?.(code, signal);
+    // Windows has no signals: a stopped process just exits with a code, so
+    // report the stop the way POSIX callers already expect.
+    finish(code, signal ?? (stopRequested ? "SIGTERM" : null));
   });
 
   return {
     child,
     stop: () => {
+      stopRequested = true;
+      if (process.platform === "win32") {
+        killWindowsProcessTree(child);
+        return;
+      }
       if (!child.killed) {
         child.kill("SIGINT");
         setTimeout(() => {

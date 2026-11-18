@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import {
   classifyToolLink,
   resolveToolLinkPath,
@@ -37,7 +38,7 @@ describe("linkTarget", () => {
       "dist/index.html",
       "/Users/dev/project",
     );
-    expect(resolved).toBe("/Users/dev/project/dist/index.html");
+    expect(resolved).toBe(join("/Users/dev/project", "dist", "index.html"));
   });
 
   test("strips wrapping punctuation while classifying", () => {

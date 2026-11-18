@@ -21,6 +21,20 @@ const base: MuseSettings = {
 };
 
 describe("buildMuseExecArgs", () => {
+  test("Windows compatibility selects the legacy shell without weakening sandbox or approval settings", () => {
+    const opts = { prompt: "run", workspacePath: "C:\\workspace", sessionId: "session", windowsShell: true };
+    const args = buildMuseExecArgs(base, opts).args;
+    expect(args).toContain("--enable-shell-tool");
+    expect(args).toContain("--allow-workspace-switch");
+    expect(args).toContain("--disable-reminders");
+    expect(args).not.toContain("--disable-approval");
+    expect(args).not.toContain("--disable-sandbox");
+    expect(args).not.toContain("--yolo");
+    expect(buildMuseExecArgs({ ...base, disableApproval: true }, opts).args).toContain("--disable-approval");
+    expect(() => buildMuseExecArgs({ ...base, yolo: true }, opts)).toThrow("muse.yolo");
+    expect(buildMuseExecArgs(base, { ...opts, windowsShell: false }).args).not.toContain("--enable-shell-tool");
+    expect(buildMuseExecArgs(base, { ...opts, windowsShell: false }).args).not.toContain("--disable-reminders");
+  });
   test("default posture keeps sandbox and requires consent for disable-approval", () => {
     const { args, rejectedExtraArgs } = buildMuseExecArgs(base, {
       prompt: "hi",
@@ -75,6 +89,32 @@ describe("buildMuseExecArgs", () => {
     expect(args).toContain("echo");
   });
 
+  test("always names the provider and skips model/effort for echo", () => {
+    const opts = {
+      prompt: "hi",
+      workspacePath: "/tmp/proj",
+      sessionId: "11111111-1111-1111-1111-111111111111",
+    };
+    const meta = buildMuseExecArgs({ ...base, model: "m", reasoningEffort: "low" }, opts).args;
+    expect(meta.slice(meta.indexOf("--provider"), meta.indexOf("--provider") + 2)).toEqual(["--provider", "meta"]);
+    expect(meta).toContain("--reasoning-effort");
+    const echo = buildMuseExecArgs(
+      { ...base, useEchoProvider: true, model: "m", reasoningEffort: "low" },
+      opts,
+    ).args;
+    expect(echo).not.toContain("--model");
+    expect(echo).not.toContain("--reasoning-effort");
+  });
+
+  test("a prompt that looks like a flag stays a prompt", () => {
+    const { args } = buildMuseExecArgs(base, {
+      prompt: "--disable-sandbox please",
+      workspacePath: "/tmp/proj",
+      sessionId: "11111111-1111-1111-1111-111111111111",
+    });
+    expect(args.slice(-2)).toEqual(["--", "--disable-sandbox please"]);
+  });
+
   test("blocks dangerous extraArgs", () => {
     const { args, rejectedExtraArgs } = buildMuseExecArgs(
       {
@@ -105,8 +145,9 @@ describe("sanitizeExtraArgs", () => {
 
 describe("resolveMuseBinary", () => {
   test("allows muse PATH name", () => {
-    expect(resolveMuseBinary("muse")).toEqual({ ok: true, path: "muse" });
-    expect(resolveMuseBinary("")).toEqual({ ok: true, path: "muse" });
+    // win32 maps bare `muse` to the installed exe (see museWindows.test.ts).
+    expect(resolveMuseBinary("muse", "linux")).toEqual({ ok: true, path: "muse" });
+    expect(resolveMuseBinary("", "darwin")).toEqual({ ok: true, path: "muse" });
   });
 
   test("rejects other bare names", () => {

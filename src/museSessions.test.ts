@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   deleteMuseSessions,
+  retainedBranchForWorkspace,
   formatSessionPickLabel,
   isPathInsideJail,
   listMuseSessionsForWorkspace,
@@ -20,7 +21,7 @@ function createIndexDb(
   dbPath: string,
   rows: Array<{
     id: string;
-    workspace: string;
+    workspace: string | null;
     sessionDir: string;
     logPath: string;
   }>,
@@ -34,7 +35,7 @@ INSERT INTO sessions (
   created_at_us, updated_at_us, prompt_count, status, status_rank, indexed_at_us
 ) VALUES (
   '${r.id}', 's${i}', '${r.sessionDir}', '${r.logPath}', 'v1',
-  '${r.workspace}', '${r.workspace}', 'title-${i}', 'prompt-${i}', 'search',
+  ${r.workspace === null ? "NULL" : `'${r.workspace}'`}, ${r.workspace === null ? "NULL" : `'${r.workspace}'`}, '${r.workspace === null ? "" : `title-${i}`}', ${r.workspace === null ? "NULL" : `'prompt-${i}'`}, 'search',
   100, ${200 + i}, 1, 'valid', 0, 200
 );`,
     )
@@ -66,16 +67,93 @@ CREATE TABLE sessions (
 );
 ${inserts}
 `;
-  const result = spawnSync("sqlite3", [dbPath], {
+  const result = spawnSync("node", ["-e", `
+    const { DatabaseSync } = require('node:sqlite');
+    const { readFileSync } = require('node:fs');
+    const db = new DatabaseSync(process.argv[1]);
+    try { db.exec(readFileSync(0, 'utf8')); } finally { db.close(); }
+  `, dbPath], {
     input: sql,
     encoding: "utf8",
   });
   if (result.status !== 0) {
-    throw new Error(result.stderr || "sqlite3 failed to create fixture db");
+    throw new Error(result.stderr || "Node SQLite failed to create fixture db");
   }
 }
 
 describe("museSessions", () => {
+  test("registered unindexed forks require matching durable ancestry and workspace evidence", () => {
+    const dir = mkdtempSync(join(tmpdir(), "muse-fork-"));
+    const parent = "01a1d11b-945f-7000-ad8d-723cd8a0944a";
+    const child = "00000000-0000-724b-b11c-0e905a1e87ef";
+    const home = join(dir, "2026", "11", "13", child);
+    mkdirSync(home, { recursive: true });
+    const path = join(home, "session.jsonl");
+    const records = [
+      { payload_type: "session.fork.created", payload: { fork_session_id: child, source_session_id: parent } },
+      { payload_type: "session.fork.turn", payload: { turn_index: 0, turn: { prompt: "Parent prompt", answer: "Parent answer" } } },
+      { payload_type: "runtime.session.metadata", payload: { kind: "metadata", record: { workspace_root: "/workspace" } } },
+    ];
+    try {
+      writeFileSync(path, records.map((r) => JSON.stringify(r)).join("\n"));
+      const before = readFileSync(path);
+      const hit = retainedBranchForWorkspace("/workspace", child, parent, dir);
+      expect(hit?.sessionLogPath).toBe(path);
+      expect(hit?.firstUserPrompt).toBe("Parent prompt");
+      expect(hit?.promptCount).toBe(1);
+      expect(retainedBranchForWorkspace("/other", child, parent, dir)).toBeUndefined();
+      expect(retainedBranchForWorkspace("/workspace", child, child, dir)).toBeUndefined();
+      expect(retainedBranchForWorkspace("/workspace", "../other", parent, dir)).toBeUndefined();
+      expect(readFileSync(path).equals(before)).toBe(true);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  test("recovers MSP-cleared workspace bindings from verified local logs without changing the index", () => {
+    const dir = mkdtempSync(join(tmpdir(), "muse-unbound-"));
+    const indexPath = join(dir, "session-index.db");
+    const root = join(dir, "workspace");
+    const other = join(dir, "other");
+    const log = (workspace: string, prompt: string) => [
+      JSON.stringify({ payload_type: "runtime.command_intake.received", payload: { record: { command: { kind: "session_start", session_metadata: { workspace_root: workspace } } } } }),
+      JSON.stringify({ payload_type: "runtime.session", payload: { kind: "run", event: { kind: "started", prompt } } }),
+    ].join("\n");
+    try {
+      const paths = ["ours", "other", "moved", "unverified"].map((name) => join(dir, `${name}.jsonl`));
+      writeFileSync(paths[0], log(root, "Retained panel draft"));
+      writeFileSync(paths[1], log(other, "Private other workspace"));
+      writeFileSync(paths[2], log(root, "Moved away") + "\n" + JSON.stringify({ payload_type: "session.workspace_branch.observed", payload: { record: { workspace_root: other } } }));
+      writeFileSync(paths[3], 'not a session record');
+      createIndexDb(indexPath, paths.map((logPath, i) => ({ id: `unbound-${i}`, workspace: null, logPath, sessionDir: dir })));
+      const before = readFileSync(indexPath);
+      const sessions = listMuseSessionsForWorkspace(root, { indexPath });
+      expect(sessions.map((s) => s.sessionId)).toEqual(["unbound-0"]);
+      expect(sessions[0].title).toBe("Retained panel draft");
+      expect(sessions[0].workspaceRoot).toBe(root);
+      expect(listMuseSessionsForWorkspace(root, { indexPath, query: "RETAINED PANEL" }).map((s) => s.sessionId)).toEqual(["unbound-0"]);
+      expect(listMuseSessionsForWorkspace(root, { indexPath, query: "Private other" })).toEqual([]);
+      expect(readFileSync(indexPath).equals(before)).toBe(true);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  test("search applies before the recent-results limit and is scoped to the workspace", () => {
+    const dir = mkdtempSync(join(tmpdir(), "muse-search-"));
+    const indexPath = join(dir, "session-index.db");
+    try {
+      createIndexDb(indexPath, Array.from({ length: 106 }, (_, i) => ({
+        id: `00000000-0000-0000-0000-${String(i).padStart(12, "0")}`,
+        workspace: i === 105 ? "/other" : "/tmp/proj",
+        sessionDir: `/tmp/s${i}`, logPath: `/tmp/s${i}/session.jsonl`,
+      })));
+      const opts = { indexPath, limit: 40 };
+      expect(listMuseSessionsForWorkspace("/tmp/proj", opts)).toHaveLength(40);
+      const old = listMuseSessionsForWorkspace("/tmp/proj", { ...opts, query: "PROMPT-0" });
+      expect(old).toHaveLength(1);
+      expect(old[0].sessionId).toBe("00000000-0000-0000-0000-000000000000");
+      expect(listMuseSessionsForWorkspace("/tmp/proj", { ...opts, query: "title-104" })[0].title).toBe("title-104");
+      expect(listMuseSessionsForWorkspace("/tmp/proj", { ...opts, query: old[0].sessionId })).toHaveLength(1);
+      expect(listMuseSessionsForWorkspace("/tmp/proj", { ...opts, query: "prompt-105" })).toHaveLength(0);
+      expect(listMuseSessionsForWorkspace("/tmp/proj", { ...opts, query: "' OR 1=1 --" })).toHaveLength(0);
+      expect(listMuseSessionsForWorkspace("/tmp/proj", { ...opts, query: "%_" })).toHaveLength(0);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   test("lists sessions for matching workspace keys", () => {
     const dir = mkdtempSync(join(tmpdir(), "muse-cli-chat-idx-"));
     const dbPath = join(dir, "session-index.db");

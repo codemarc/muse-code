@@ -15,6 +15,30 @@ export function normalizeWorkspacePath(workspacePath: string): string {
 }
 
 /**
+ * Path of `fsPath` relative to `workspacePath`, or null when it is outside.
+ * Accepts either separator, and on Windows compares case-insensitively
+ * (VS Code reports `c:\proj` where other sources say `C:\proj`).
+ */
+export function relativeToWorkspace(
+  fsPath: string,
+  workspacePath: string,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  const root = normalizeWorkspacePath(workspacePath);
+  if (!root || !fsPath) {
+    return null;
+  }
+  const fold = (s: string) => (platform === "win32" ? s.toLowerCase() : s);
+  const head = fsPath.slice(0, root.length);
+  const next = fsPath.charAt(root.length);
+  if (fold(head) !== fold(root) || (next !== "/" && next !== "\\")) {
+    return null;
+  }
+  const rel = fsPath.slice(root.length + 1);
+  return rel || null;
+}
+
+/**
  * Muse Code refuses symlink / reparse-point workspace roots.
  * Detect that before spawning so users get a clear fix instead of opaque stderr.
  */

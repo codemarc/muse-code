@@ -99,6 +99,12 @@ function openPathWithOs(filePath: string): Promise<boolean> {
   if (process.platform === "linux") {
     return runDetached("xdg-open", [filePath]);
   }
+  if (process.platform === "win32") {
+    // Explorer opens a file with its default app (the browser for .html).
+    // Spawned directly (no cmd.exe), so the path is never shell-parsed.
+    const systemRoot = process.env.SystemRoot || "C:\\Windows";
+    return runDetached(`${systemRoot}\\explorer.exe`, [filePath]);
+  }
   return Promise.resolve(false);
 }
 

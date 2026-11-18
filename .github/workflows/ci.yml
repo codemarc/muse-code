@@ -8,7 +8,11 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -26,9 +30,11 @@ jobs:
         run: bun test
 
       - name: Package VSIX
+        if: matrix.os == 'ubuntu-latest'
         run: bun run compile:prod && bunx vsce package --no-dependencies
 
       - name: Upload VSIX
+        if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:
           name: muse-cli-chat-vsix
