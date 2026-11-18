@@ -24,11 +24,12 @@ On the Windows setup recorded in this workspace, shell execution was verified in
 ## Verification
 
 - TypeScript: passed.
-- Bun: 302 tests passed, 0 failed; 947 assertions.
+- Bun: 303 tests passed with 949 assertions.
 - Git whitespace check: passed.
 - Production bundle: built with `node esbuild.mjs --minify`.
 - Current webview rendered at 340 px and 500 px with conversation, streaming and empty states.
 - Muse 1.4.20 reports the Windows sandbox ready. A controlled PowerShell tool call through Panel mode still failed before execution with `windows_elevated setup_required`.
+- Windows compatibility mode executed a real sandboxed PowerShell command and exposed its stdout as readable tool output through the corrected exec parser.
 
 The restricted runner initially blocked Git/Node child processes. The same test suite passed when run with the required process permission; no source change was needed.
 

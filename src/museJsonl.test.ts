@@ -79,4 +79,18 @@ describe("museJsonl", () => {
       expect(ui.resultRaw).toContain("command");
     }
   });
+
+  test("shows the tool name and stdout from a Muse 1.4.20 text result", () => {
+    const record = parseMuseLine(JSON.stringify({
+      payload_type: "tool.result",
+      payload: {
+        kind: "tool_result",
+        text: "MUSE_1420_OK\r\n",
+        correlation_facts: { tool_name: "shell", outcome: "success" },
+      },
+    }))!;
+    const event = recordToUiEvent(record);
+    expect(event).toMatchObject({ kind: "tool", name: "shell", resultView: "MUSE_1420_OK\r\n" });
+    if (event?.kind === "tool") expect(event.resultRaw).toContain("correlation_facts");
+  });
 });

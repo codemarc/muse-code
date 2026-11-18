@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Muse 1.4.20 compatibility
+
+- Show the tool name and readable stdout for the newer exec tool result format. Keep the original payload available in Raw view.
+
 ### Conversation names and branching
 
 - Add persistent workspace-scoped conversation names in headers, editor tabs and searchable history, retaining drafts and ancestry. Use extension-owned metadata because Muse's Windows native rename endpoint reports unsupported; no CLI database/log edits.
